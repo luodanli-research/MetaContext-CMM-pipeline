@@ -1,0 +1,92 @@
+﻿reaction_id,lb,ub,reaction_name,equation,type
+NADFADOR,-1000,1000,NAD:FAD oxidoreductase,2 nad[C_c] + fdxr_42[C_c] + fadh2[C_c]  <=> 2 nadh[C_c] + fdxo_42[C_c] + fad[C_c] ,Ana2Cata
+RNF,0,1000,Ferredoxin:NAD oxidoreductase ( 2 protons traslocation),3 h[C_c] + nad[C_c] + fdxr_42[C_c]  -> nadh[C_c] + 2 h[C_e] + fdxo_42[C_c] ,Ana2Cata
+FQR,0,1000,Cyclic Electron Flow,2.0 fdxrd_c + pq_u --> 2.0 fdxo_2_2_c + 2.0 h_c + pqh2_u,Ana2Cata
+FADRx2,0,1000,FAD reductase,h[C_c] + nadph[C_c] + fad[C_c]  -> nadp[C_c] + fadh2[C_c] ,Ana2Cata
+NADTRHD,0,1000,NAD transhydrogenase,nad[C_c] + nadph[C_c]  -> nadh[C_c] + nadp[C_c] ,Ana2Cata
+NDH1_1u,0,1000,NAD(P)H dehydrogenase (plastoquinone-8 & 3 protons) (tilacoide),4 h[C_c] + nadph[C_c] + pq[C_u]  -> nadp[C_c] + 3 h[C_u] + pqh2[C_u] ,Ana2Cata
+NADPHQR,0,1000,NADPHQR,h[C_c] + nadph[C_c] + mqn6[C_c]  -> nadp[C_c] + mql6[C_c] ,Ana2Cata
+NADPHQR2,0,1000,NADPH Quinone Reductase (Ubiquinone-8),h[C_c] + nadph[C_c] + q8[C_c]  -> nadp[C_c] + q8h2[C_c] ,Ana2Cata
+QRr,0,1000,QRr,h[C_c] + nadph[C_c] + q[C_c]  -> nadp[C_c] + qh2[C_c] ,Ana2Cata
+NADPHQR3,0,1000,NADPH Quinone Reductase (Menaquinone-8),h[C_c] + nadph[C_c] + mqn8[C_c]  -> nadp[C_c] + mql8[C_c] ,Ana2Cata
+NADPHQR4,0,1000,NADPH Quinone Reductase (2-Demethylmenaquinone-8),h[C_c] + nadph[C_c] + 2dmmq8[C_c]  -> nadp[C_c] + 2dmmql8[C_c] ,Ana2Cata
+NDH1_1p,0,1000,NAD(P)H dehydrogenase (plastoquinone-8 & 3 protons) (periplasm),4 h[C_c] + nadph[C_c] + pq[C_p]  -> nadp[C_c] + 3 h[C_p] + pqh2[C_p] ,Ana2Cata
+NDH1_3u,0,1000,Active co2 transporter facilitator (tilacoide),h2o[C_c] + 3 h[C_c] + nadph[C_c] + co2[C_p] + pq[C_u]  -> nadp[C_c] + hco3[C_c] + 3 h[C_u] + pqh2[C_u] ,Ana2Cata
+NDH1_4pp,0,1000,Active co2 transporter facilitator (periplasm),h2o[C_c] + 3 h[C_c] + nadph[C_c] + co2[C_p] + pq[C_p]  -> nadp[C_c] + 3 h[C_p] + hco3[C_c] + pqh2[C_p] ,Ana2Cata
+NDH_1,0,1000,NDH 1,3 h[C_c] + nadph[C_c] + mqn6[C_c]  -> nadp[C_c] + 2 h[C_e] + mql6[C_c] ,Ana2Cata
+FTR,0,1000,Ferredoxin thioredoxin reductase,2 h[C_c] + trdox[C_c] + 2 fdxrd[C_c]  -> trdrd[C_c] + 2 fdxo_2_2[C_c] ,Ana2Detox
+GTHOr,-1000,1000,Glutathione oxidoreductase,h[C_c] + nadph[C_c] + gthox[C_c]  <=> nadp[C_c] + 2 gthrd[C_c] ,Ana2Detox
+TRDR,0,1000,Thioredoxin reductase (NADPH),h[C_c] + nadph[C_c] + trdox[C_c]  -> nadp[C_c] + trdrd[C_c] ,Ana2Detox
+MTHFR5,-1000,1000,"5,10-methylenetetrahydrofolate reductase (Ferredoxin) Electron bifurcating",fdxo_42_c + h_c + mlthf_c + 2.0 nadh_c <=> 5mthf_c + fdxr_42_c + 2.0 nad_c,Cata2Ana
+THD2,0,1000,NAD(P) transhydrogenase,nadh[C_c] + nadp[C_c] + 2 h[C_e]  -> 2 h[C_c] + nad[C_c] + nadph[C_c] ,Cata2Ana
+THD2pp,0,1000,NAD(P) transhydrogenase (periplasm),nadh[C_c] + nadp[C_c] + 2 h[C_p]  -> 2 h[C_c] + nad[C_c] + nadph[C_c] ,Cata2Ana
+FRNDPR2r,0,1000,Ferredoxin : nadp reductase,h[C_c] + nadh[C_c] + 2 nadp[C_c] + fdxr_42[C_c]  -> nad[C_c] + 2 nadph[C_c] + fdxo_42[C_c] ,Cata2Ana
+FRNDPR2r_1,0,1000,Ferredoxin : nadp reductase,h[C_c] + nadh[C_c] + 2 nadp[C_c] + fdxr_42[C_c]  -> nad[C_c] + 2 nadph[C_c] + fdxo_42[C_c] ,Cata2Ana
+NTRARz,0,1000,Nitrate reductase (thioredoxin),trdrd[C_c] + no3[C_c]  -> h2o[C_c] + trdox[C_c] + no2[C_c] ,Detox2Ana
+METSOXR1,0,1000,L-methionine-S-oxide reductase,trdrd[C_c] + metsox_S__L[C_c]  -> h2o[C_c] + met__L[C_c] + trdox[C_c] ,Detox2Ana
+METSOXR2,0,1000,L-methionine-R-sulfoxide reductase,trdrd[C_c] + metsox_R__L[C_c]  -> h2o[C_c] + met__L[C_c] + trdox[C_c] ,Detox2Ana
+METSR_R1,0,1000,L methionine R oxide reductase  trdrd,trdrd[C_c] + metox__R[C_c]  -> h2o[C_c] + met__L[C_c] + trdox[C_c] ,Detox2Ana
+METSR_S1,0,1000,L methionine S oxide reductase  trdrd,trdrd[C_c] + metox[C_c]  -> h2o[C_c] + met__L[C_c] + trdox[C_c] ,Detox2Ana
+APSR,0,1000,APSR (Adenosine 5-phosphosulfate reductase),aps[C_c] + trdrd[C_c]  -> 2 h[C_c] + amp[C_c] + so3[C_c] + trdox[C_c] ,Detox2Ana
+PAPSR,0,1000,Phosphoadenylyl-sulfate reductase (thioredoxin),paps[C_c] + trdrd[C_c]  -> 2 h[C_c] + pap[C_c] + so3[C_c] + trdox[C_c] ,Detox2Ana
+RNDR1,0,1000,Ribonucleoside-diphosphate reductase (ADP),adp[C_c] + trdrd[C_c]  -> h2o[C_c] + dadp[C_c] + trdox[C_c] ,Detox2Ana
+RNDR2,0,1000,Ribonucleoside-diphosphate reductase (GDP),gdp[C_c] + trdrd[C_c]  -> h2o[C_c] + dgdp[C_c] + trdox[C_c] ,Detox2Ana
+RNDR3,0,1000,Ribonucleoside-diphosphate reductase (CDP),trdrd[C_c] + cdp[C_c]  -> h2o[C_c] + trdox[C_c] + dcdp[C_c] ,Detox2Ana
+RNDR4,0,1000,Ribonucleoside-diphosphate reductase (UDP),udp[C_c] + trdrd[C_c]  -> h2o[C_c] + trdox[C_c] + dudp[C_c] ,Detox2Ana
+RNTR1,0,1000,Ribonucleoside triphosphate reductase  ATP,atp[C_c] + trdrd[C_c]  -> h2o[C_c] + datp[C_c] + trdox[C_c] ,Detox2Ana
+RNTR2,0,1000,Ribonucleoside triphosphate reductase  GTP,gtp[C_c] + trdrd[C_c]  -> h2o[C_c] + dgtp[C_c] + trdox[C_c] ,Detox2Ana
+RNTR3,0,1000,Ribonucleoside triphosphate reductase  CTP,ctp[C_c] + trdrd[C_c]  -> h2o[C_c] + trdox[C_c] + dctp[C_c] ,Detox2Ana
+RNTR4,0,1000,Ribonucleoside triphosphate reductase  UTP,trdrd[C_c] + utp[C_c]  -> h2o[C_c] + trdox[C_c] + dutp[C_c] ,Detox2Ana
+AHSERL4,-1000,1000,Cysteine synthase  Thiosulfate,acser[C_c] + tsul[C_c] + trdrd[C_c]  <=> h[C_c] + so3[C_c] + cys__L[C_c] + ac[C_c] + trdox[C_c] ,Detox2Ana
+MOADSUx,0,1000,"MoaD sulfuration (nadh, assumed)",nadh[C_c] + iscssh[C_c] + moadamp[C_c]  -> nad[C_c] + amp[C_c] + iscs[C_c] + moadcosh[C_c] ,Cata2Ana
+DHDPRx_r,-1000,1000,Dihydrodipicolinate reductase (NADH) reversible,h[C_c] + nadh[C_c] + 23dhdp[C_c]  <=> nad[C_c] + thdp[C_c] ,Cata2Ana
+G5SD2,0,1000,Glutamate 5 semialdehyde dehydrogenase,h[C_c] + nadh[C_c] + glu5p[C_c]  -> pi[C_c] + nad[C_c] + glu5sa[C_c] ,Cata2Ana
+P5CRx,0,1000,P5CRx,2 h[C_c] + nadh[C_c] + 1pyr5c[C_c]  -> nad[C_c] + pro__L[C_c] ,Cata2Ana
+POAACR,0,1000,Peroxyaminoacrylate reductase,nadh[C_c] + poaac[C_c]  -> h2o[C_c] + nad[C_c] + 3amac[C_c] ,Cata2Ana
+MTHFR2,0,1000,"5,10-methylenetetrahydrofolate reductase (NADH)",2 h[C_c] + nadh[C_c] + mlthf[C_c]  -> nad[C_c] + 5mthf[C_c] ,Cata2Ana
+MTHFR2_1,0,1000,"5,10-methylenetetrahydrofolate reductase (NADH)",h[C_c] + nadh[C_c] + mlthf[C_c]  -> nad[C_c] + 5mthf[C_c] ,Cata2Ana
+CDP4D6DGLCRx,0,1000,CDP 4 dehydro 6 deoxyglucose reductase,h[C_c] + nadh[C_c] + cdp4dh6doglc[C_c]  -> h2o[C_c] + nad[C_c] + cdp4dh36ddglc[C_c] ,Cata2Ana
+CDPABEQS,0,1000,CDP abequose synthase,h[C_c] + nadh[C_c] + cdp4dh36ddglc[C_c]  -> nad[C_c] + cdpabeq[C_c] ,Cata2Ana
+EAR100x,0,1000,Enoyl-[acyl-carrier-protein] reductase (NADH) (n-C10:0),h[C_c] + nadh[C_c] + tdec2eACP[C_c]  -> nad[C_c] + dcaACP[C_c] ,Cata2Ana
+EAR120x,0,1000,Enoyl-[acyl-carrier-protein] reductase (NADH) (n-C12:0),h[C_c] + nadh[C_c] + tddec2eACP[C_c]  -> nad[C_c] + ddcaACP[C_c] ,Cata2Ana
+EAR121x,0,1000,Enoyl-[acyl-carrier-protein] reductase (NADH) (n-C12:1),h[C_c] + nadh[C_c] + t3c5ddeceACP[C_c]  -> nad[C_c] + cddec5eACP[C_c] ,Cata2Ana
+EAR140x,0,1000,Enoyl-[acyl-carrier-protein] reductase (NADH) (n-C14:0),h[C_c] + nadh[C_c] + tmrs2eACP[C_c]  -> nad[C_c] + myrsACP[C_c] ,Cata2Ana
+EAR141x,0,1000,Enoyl-[acyl-carrier-protein] reductase (NADH) (n-C14:1),h[C_c] + nadh[C_c] + t3c7mrseACP[C_c]  -> nad[C_c] + tdeACP[C_c] ,Cata2Ana
+EAR160x,0,1000,Enoyl-[acyl-carrier-protein] reductase (NADH) (n-C16:0),h[C_c] + nadh[C_c] + tpalm2eACP[C_c]  -> nad[C_c] + palmACP[C_c] ,Cata2Ana
+EAR161x,0,1000,Enoyl-[acyl-carrier-protein] reductase (NADH) (n-C16:1),h[C_c] + nadh[C_c] + t3c9palmeACP[C_c]  -> nad[C_c] + hdeACP[C_c] ,Cata2Ana
+EAR180x,0,1000,Enoyl-[acyl-carrier-protein] reductase (NADH) (n-C18:0),h[C_c] + nadh[C_c] + toctd2eACP[C_c]  -> nad[C_c] + ocdcaACP[C_c] ,Cata2Ana
+EAR181x,0,1000,Enoyl-[acyl-carrier-protein] reductase (NADH) (n-C18:1),h[C_c] + nadh[C_c] + t3c11vaceACP[C_c]  -> nad[C_c] + octeACP[C_c] ,Cata2Ana
+EAR40x,0,1000,Enoyl-[acyl-carrier-protein] reductase (NADH) (n-C4:0),h[C_c] + nadh[C_c] + but2eACP[C_c]  -> nad[C_c] + butACP[C_c] ,Cata2Ana
+EAR60x,0,1000,Enoyl-[acyl-carrier-protein] reductase (NADH) (n-C6:0),h[C_c] + nadh[C_c] + thex2eACP[C_c]  -> nad[C_c] + hexACP[C_c] ,Cata2Ana
+EAR80x,0,1000,Enoyl-[acyl-carrier-protein] reductase (NADH) (n-C8:0),h[C_c] + nadh[C_c] + toct2eACP[C_c]  -> nad[C_c] + ocACP[C_c] ,Cata2Ana
+GLYCL_2,0,1000,GLYCL 2,nh4[C_c] + nadh[C_c] + co2[C_c] + mlthf[C_c]  -> nad[C_c] + gly[C_c] + thf[C_c] ,Cata2Ana
+ALAD_syn,0,1000,L-alanine dehydrogenase,nh4[C_c] + h[C_c] + nadh[C_c] + pyr[C_c]  -> h2o[C_c] + nad[C_c] + ala__L[C_c] ,Cata2Ana
+GLUSx,0,1000,Glutamate synthase  NADH2,h[C_c] + nadh[C_c] + akg[C_c] + gln__L[C_c]  -> 2 glu__L[C_c] + nad[C_c] ,Cata2Ana
+G1PDH,-1000,1000,G1PDH,h[C_c] + nadh[C_c] + dhap[C_c]  <=> nad[C_c] + glyc1p[C_c] ,Cata2Ana
+DMPPS,0,1000,1-hydroxy-2-methyl-2-(E)-butenyl 4-diphosphate reductase (dmpp),h[C_c] + nadh[C_c] + h2mb4p[C_c]  -> h2o[C_c] + nad[C_c] + dmpp[C_c] ,Cata2Ana
+IPDPS,0,1000,1-hydroxy-2-methyl-2-(E)-butenyl 4-diphosphate reductase (ipdp),h[C_c] + nadh[C_c] + h2mb4p[C_c]  -> h2o[C_c] + nad[C_c] + ipdp[C_c] ,Cata2Ana
+MECDPDH2,0,1000,"2C-methyl-D-erythritol 2,4 cyclodiphosphate dehydratase",nadh[C_c] + 2mecdp[C_c]  -> h2o[C_c] + nad[C_c] + h2mb4p[C_c] ,Cata2Ana
+FLDR,0,1000,Flavodoxin reductase (NADPH),h[C_c] + nadph[C_c] + fldox[C_c]  -> nadp[C_c] + fldrd[C_c] ,Ana2Cata
+FLDR2,0,1000,Flavodoxin reductase (NADPH),nadph[C_c] + 2 flxso[C_c]  -> h[C_c] + nadp[C_c] + 2 flxr[C_c] ,Ana2Cata
+FLVR,0,1000,Flavin reductase,h[C_c] + nadph[C_c] + ribflv[C_c]  -> nadp[C_c] + rbflvrd[C_c] ,Ana2Cata
+FMNRx2,0,1000,FMN reductase,h[C_c] + nadph[C_c] + fmn[C_c]  -> nadp[C_c] + fmnh2[C_c] ,Ana2Cata
+FMNRy,0,1000,FMN reductase  NADPH dependent,h[C_c] + nadph[C_c] + fmn[C_c]  -> nadp[C_c] + fmnRD[C_c] ,Ana2Cata
+ALCD19y,0,1000,Alcohol dehydrogenase  glycerol  NADP,h[C_c] + nadph[C_c] + glyald[C_c]  -> nadp[C_c] + glyc[C_c] ,Ana2Cata
+ALCD2yi,0,1000,"Alcohol dehydrogenase (ethanol, NADP)",h[C_c] + nadph[C_c] + acald[C_c]  -> nadp[C_c] + etoh[C_c] ,Ana2Cata
+ALR3,0,1000,Aldose reductase (acetol),h[C_c] + nadph[C_c] + acetol[C_c]  -> 12ppd__S[C_c] + nadp[C_c] ,Ana2Cata
+GHBDHy,-1000,1000,Gamma-hydroxybutyrate dehydrogenase (NADPH),h[C_c] + nadph[C_c] + sucsal[C_c]  <=> nadp[C_c] + ghb[C_c] ,Ana2Cata
+LALDO3,0,1000,L-Lactaldehyde:NADP+ 1-oxidoreductase,h[C_c] + nadph[C_c] + mthgxl[C_c]  -> nadp[C_c] + lald__L[C_c] ,Ana2Cata
+SSCOARy,-1000,1000,Succinyl-coA reductase (NADPH),h[C_c] + nadph[C_c] + succoa[C_c]  <=> coa[C_c] + nadp[C_c] + sucsal[C_c] ,Ana2Cata
+GMPR,0,1000,GMP reductase,2 h[C_c] + nadph[C_c] + gmp[C_c]  -> nh4[C_c] + nadp[C_c] + imp[C_c] ,Ana2Cata
+4HBHYOX,0,1000,4HBHYOX,o2[C_c] + h[C_c] + nadph[C_c] + 4hbz[C_c]  -> h2o[C_c] + nadp[C_c] + 34dhbz[C_c] ,Ana2Cata
+PACCOAE,0,1000,"Ring 1,2-phenylacetyl-CoA epoxidase (NADPH)",o2[C_c] + h[C_c] + nadph[C_c] + phaccoa[C_c]  -> h2o[C_c] + nadp[C_c] + rephaccoa[C_c] ,Ana2Cata
+2DGLCNRy,0,1000,2-dehydro-D-gluconate reductase (NADPH),h[C_c] + nadph[C_c] + 2dhglcn[C_c]  -> nadp[C_c] + glcn[C_c] ,Ana2Cata
+5DGLCNR,-1000,1000,5-dehydro-D-gluconate reductase,h[C_c] + nadph[C_c] + 5dglcn[C_c]  <=> nadp[C_c] + glcn[C_c] ,Ana2Cata
+ARABRr,-1000,1000,Arabinose reductase,h[C_c] + nadph[C_c] + arab__L[C_c]  <=> nadp[C_c] + abt__L[C_c] ,Ana2Cata
+GLYCLTDy,0,1000,Glycolate dehydrogenase (NADP),h[C_c] + nadph[C_c] + glx[C_c]  -> nadp[C_c] + glyclt[C_c] ,Ana2Cata
+HPYRRy,0,1000,Hydroxypyruvate reductase (NADPH),h[C_c] + nadph[C_c] + hpyr[C_c]  -> nadp[C_c] + glyc__R[C_c] ,Ana2Cata
+IDOND2,0,1000,L-indonate 5-dehydrogenase (NADP),h[C_c] + nadph[C_c] + 5dglcn[C_c]  -> nadp[C_c] + idon__L[C_c] ,Ana2Cata
+MSAR,0,1000,Malonic semialdehyde reductase,h[C_c] + nadph[C_c] + msa[C_c]  -> nadp[C_c] + 3hpp[C_c] ,Ana2Cata
+PGLCNDH,-1000,1000,PGLCNDH,nadph[C_c] + 6p2dhglcn[C_c]  <=> 2 h[C_c] + nadp[C_c] + 6pgc[C_c] ,Ana2Cata
+TYRL,0,1000,Tyrosine lyase,nadph[C_c] + amet[C_c] + tyr__L[C_c]  -> h[C_c] + nadp[C_c] + dad_5[C_c] + met__L[C_c] + 4crsol[C_c] + dhgly[C_c] ,Ana2Cata
+CYSLY3,0,1000,Cysteine lyase (nadph),h[C_c] + nadph[C_c] + cys__L[C_c]  -> nadp[C_c] + ala__L[C_c] + h2s[C_c] ,Ana2Cata

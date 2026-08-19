@@ -1,0 +1,19 @@
+name: cmm-simulation
+
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python=3.10.20
+  - pip
+  - numpy=2.1.1
+  - pandas=2.2.2
+  - scipy=1.14.0
+  - cobra=0.29.0
+  - optlang=1.8.2
+  - swiglpk=5.0.13
+  - pip:
+      - cplex==22.1.1.0
+      - micom==0.36.3
+      - riptide==3.4.81
