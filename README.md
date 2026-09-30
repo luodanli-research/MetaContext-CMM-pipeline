@@ -105,29 +105,6 @@ After download, run `python pipeline/run_case_study.py` from the repo root. Outp
 python pipeline/run_case_study.py
 ```
 
-**Isolated pre-solve run root (recommended for regeneration / consistency checks):**
-
-Do not overwrite published `case_study/outputs/`. Bootstrap a dated run tree that
-**copies** bounds/QC into `02_context/` (regular files) and **symlinks**
-`01_baseline` read-only:
-
-```bash
-python pipeline/bootstrap_presolve_run_root.py --case-study-root case_study
-# → case_study/runs/presolve_unified_YYYYMMDD/
-# → case_study/runs/presolve_unified_YYYYMMDD_analysis/
-
-python pipeline/run_case_study.py \
-  --output-root case_study/runs/presolve_unified_YYYYMMDD \
-  --analysis-dir case_study/runs/presolve_unified_YYYYMMDD_analysis \
-  --sample SW46 --sensitivity tradeoff --tradeoffs 1.0
-```
-
-Formal stage writes pre-solve `*-ctx.pickle` beside the copied bounds, then loads
-a fresh instance to solve. Sensitivity starts only when that pickle and formal
-bsl/ctx fluxes exist for the sample (hard gate; no fallback to other trees).
-Acceptance stages and tolerances: `pipeline/ACCEPTANCE_PRESOLVE.md`
-(status until numerical runs finish: **代码修改完成，数值验证待执行**).
-
 **Key options:**
 
 The flags below apply to both `run_example.py` and `run_case_study.py`; only preset defaults differ (samples, sensitivity grids, and AC heatmap guilds). For the full flag set and defaults, run `python pipeline/run_example.py --help` or `python pipeline/run_case_study.py --help`.
@@ -135,7 +112,7 @@ The flags below apply to both `run_example.py` and `run_case_study.py`; only pre
 | Option | Role |
 |---|---|
 | `--sample` | Subset of preset samples to run |
-| `--output-root` | Simulation output tree (default: preset `…/outputs`; use an isolated `runs/presolve_unified_*` root for regeneration) |
+| `--output-root` | Simulation output tree (default: preset `…/outputs`) |
 | `--analysis-dir` | Metric output tree |
 | `--sensitivity` | `medium` / `tradeoff` / `reaction` (default: all three) |
 | `--metrics` | `eai` / `arb` / `ac` (default: `eai arb ac`) |
