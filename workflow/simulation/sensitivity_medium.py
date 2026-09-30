@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""Run medium-bound sensitivity via ``*-ctx.pickle`` load + medium edit.
+"""Run medium-bound sensitivity via pre-solve ``*-ctx.pickle`` load + medium edit.
 
 Constraint-loading contract:
 
-1. If ``1000`` is in ``--bounds``: copy formal ``{sample}-ctx-flux.csv`` into
-   ``bound1000/``, or solve the loaded ctx CMM unchanged when no flux exists.
-2. For every other bound: load ``{sample}-ctx.pickle``, copy
+1. If ``1000`` is in ``--bounds``: copy same-batch formal ``{sample}-ctx-flux.csv``
+   into ``bound1000/`` (via ``--baseline-flux-dir``), or solve the loaded
+   pre-solve ctx CMM unchanged when no flux exists.
+2. For every other bound: load pre-solve ``{sample}-ctx.pickle``, copy
    ``community.medium``, compress listed exchanges that are currently 1000 to
    the scenario bound, assign, then cooperative tradeoff.
 
-Note: compressing medium on a loaded ctx pickle applies medium *after*
-context. A previous fresh-rebuild implementation is archived under ``bak/``.
+The ctx pickle must be the formal pre-solve starting model (written before the
+first ctx solve), not a post-solve snapshot.
 """
 
 from __future__ import annotations
@@ -32,7 +33,11 @@ from _sensitivity_simulation import (
     load_bsl_community,
     load_context_community,
     make_sensitivity_progress,
+    adopt_failure_table,
+    clear_failure,
     read_one_column_list,
+    record_failure,
+    recorded_failure,
     require_file,
     require_directory,
     resolve_samples,
@@ -92,7 +97,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--context-cmm-dir",
         type=Path,
         required=True,
-        help="Directory with <sample>-ctx.pickle starting models.",
+        help=(
+            "Directory with pre-solve <sample>-ctx.pickle starting models "
+            "(written by formal simulation before the first ctx solve)."
+        ),
     )
     parser.add_argument(
         "--output-dir",
@@ -111,8 +119,9 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help=(
-            "Optional directory with <sample>-bsl-flux.csv and formal "
-            "<sample>-ctx-flux.csv (typically 03_simulation/context/)."
+            "Directory with same-batch formal <sample>-bsl-flux.csv and "
+            "<sample>-ctx-flux.csv (typically 03_simulation/context/). "
+            "bound1000 copies formal ctx flux from this directory when present."
         ),
     )
     parser.add_argument(
@@ -126,9 +135,19 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--tradeoff",
+        type=float,
+        default=1.0,
+        help=(
+            "Cooperative-tradeoff fraction for medium solves (default: 1). "
+            "Fraction 1 copies formal bound1000 and baseline fluxes. Any other "
+            "fraction solves bsl and ctx, including bound1000, at that value."
+        ),
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
-        help="Rerun scenarios even when flux outputs already exist.",
+        help="Rerun scenarios even when a flux file or a recorded failure already exists.",
     )
     return parser
 
@@ -161,8 +180,37 @@ def flux_path(prefix: Path) -> Path:
     return prefix.with_name(prefix.name + "-flux.csv")
 
 
+def _remember_medium_failure(
+    failure_rows: list[dict[str, object]],
+    prefix: Path,
+    *,
+    sample: str,
+    scenario: str,
+    parameter_value: float,
+    error_type: str,
+    error_message: str,
+) -> None:
+    record_failure(prefix, error_type, error_message)
+    failure_rows.append(
+        {
+            "sample": sample,
+            "scenario": scenario,
+            "parameter_value": parameter_value,
+            "mode": "ctx",
+            "error_type": error_type,
+            "error_message": error_message,
+        }
+    )
+
+
 def is_default_bound(value: float) -> bool:
     return bool(np.isclose(float(value), DEFAULT_BOUND))
+
+
+def tradeoff_is_formal(fraction: float) -> bool:
+    """True when the solve matches the formal cooperative-tradeoff fraction."""
+
+    return bool(np.isclose(float(fraction), 1.0))
 
 
 def run(args: argparse.Namespace) -> None:
@@ -182,6 +230,10 @@ def run(args: argparse.Namespace) -> None:
         for value in bounds
     ):
         raise ValueError("Every --bounds value must be in (0, 1000].")
+    tradeoff = float(args.tradeoff)
+    if not np.isfinite(tradeoff) or not 0 < tradeoff <= 1:
+        raise ValueError("--tradeoff must be in (0, 1].")
+    copy_formal = tradeoff_is_formal(tradeoff)
 
     for sample in samples:
         find_baseline_cmm(baseline_cmm_dir, sample)
@@ -192,6 +244,12 @@ def run(args: argparse.Namespace) -> None:
     first_scenario = label_bound(bounds[0])
     include_bound1000 = bounds_include_default(bounds)
     compress_bounds = [b for b in bounds if not is_default_bound(b)]
+    if not args.force:
+        adopt_failure_table(
+            output_dir,
+            "00_sensitivity_medium_failures.csv",
+            default_mode="ctx",
+        )
 
     n_bsl = len(samples)
     n_ctx = len(samples) * (
@@ -216,15 +274,16 @@ def run(args: argparse.Namespace) -> None:
                 status="running",
             )
             if args.force or not solution_complete(first_prefix):
-                if sample in baseline_fluxes:
+                if copy_formal and sample in baseline_fluxes:
                     copy_file_atomic(
                         baseline_fluxes[sample],
                         flux_path(first_prefix),
                     )
+                    clear_failure(first_prefix)
                     status = "reused input flux"
                 else:
                     community = load_bsl_community(baseline_cmm_dir, sample)
-                    solution = run_tradeoff(community, fraction=1.0)
+                    solution = run_tradeoff(community, fraction=tradeoff)
                     save_solution(solution, first_prefix)
                     status = "solved"
             else:
@@ -237,6 +296,7 @@ def run(args: argparse.Namespace) -> None:
                 if not args.force and solution_complete(prefix):
                     continue
                 copy_file_atomic(first_flux, flux_path(prefix))
+                clear_failure(prefix)
             progress.update(bsl_task, advance=1, status=status)
 
         manifest_rows: list[dict[str, object]] = []
@@ -257,14 +317,59 @@ def run(args: argparse.Namespace) -> None:
                     description=f"[{sample}/{scenario}]",
                     status="running",
                 )
-                try:
-                    result = ensure_bound1000_from_formal(
-                        sample,
-                        context_cmm_dir=context_cmm_dir,
-                        baseline_flux_dir=args.baseline_flux_dir,
-                        output_prefix=prefix,
-                        force=args.force,
+                recorded = None if args.force else recorded_failure(prefix)
+                if recorded is not None:
+                    error_type, error_message = recorded
+                    _remember_medium_failure(
+                        failure_rows,
+                        prefix,
+                        sample=sample,
+                        scenario=scenario,
+                        parameter_value=DEFAULT_BOUND,
+                        error_type=error_type,
+                        error_message=error_message,
                     )
+                    manifest_rows.append(
+                        {
+                            "sample": sample,
+                            "sensitivity_type": "medium",
+                            "scenario": scenario,
+                            "parameter_value": DEFAULT_BOUND,
+                            "mode": "ctx",
+                            "status": "skipped_failed",
+                            "listed_reactions": len(reactions),
+                        }
+                    )
+                    progress.update(
+                        ctx_task, advance=1, status="skipped_failed"
+                    )
+                    continue
+                try:
+                    if copy_formal:
+                        result = ensure_bound1000_from_formal(
+                            sample,
+                            context_cmm_dir=context_cmm_dir,
+                            baseline_flux_dir=args.baseline_flux_dir,
+                            output_prefix=prefix,
+                            force=args.force,
+                        )
+                    elif not args.force and solution_complete(prefix):
+                        result = {
+                            "status": "reused",
+                            "flux_file": flux_path(prefix).name,
+                        }
+                    else:
+                        community = load_context_community(
+                            context_cmm_dir, sample
+                        )
+                        solution = run_tradeoff(
+                            community, fraction=tradeoff
+                        )
+                        save_solution(solution, prefix)
+                        result = {
+                            "status": "computed",
+                            "flux_file": flux_path(prefix).name,
+                        }
                     manifest_rows.append(
                         {
                             "sample": sample,
@@ -286,14 +391,14 @@ def run(args: argparse.Namespace) -> None:
                         status=str(result["status"]),
                     )
                 except Exception as error:
-                    failure_rows.append(
-                        {
-                            "sample": sample,
-                            "scenario": scenario,
-                            "parameter_value": DEFAULT_BOUND,
-                            "error_type": type(error).__name__,
-                            "error_message": str(error),
-                        }
+                    _remember_medium_failure(
+                        failure_rows,
+                        prefix,
+                        sample=sample,
+                        scenario=scenario,
+                        parameter_value=DEFAULT_BOUND,
+                        error_type=type(error).__name__,
+                        error_message=str(error),
                     )
                     progress.console.print(
                         f"[{sample}/{scenario}] failed: {error}"
@@ -310,6 +415,33 @@ def run(args: argparse.Namespace) -> None:
                     description=f"[{sample}/{scenario}]",
                     status="running",
                 )
+                recorded = None if args.force else recorded_failure(prefix)
+                if recorded is not None:
+                    error_type, error_message = recorded
+                    _remember_medium_failure(
+                        failure_rows,
+                        prefix,
+                        sample=sample,
+                        scenario=scenario,
+                        parameter_value=bound,
+                        error_type=error_type,
+                        error_message=error_message,
+                    )
+                    manifest_rows.append(
+                        {
+                            "sample": sample,
+                            "sensitivity_type": "medium",
+                            "scenario": scenario,
+                            "parameter_value": bound,
+                            "mode": "ctx",
+                            "status": "skipped_failed",
+                            "listed_reactions": len(reactions),
+                        }
+                    )
+                    progress.update(
+                        ctx_task, advance=1, status="skipped_failed"
+                    )
+                    continue
                 if not args.force and solution_complete(prefix):
                     manifest_rows.append(
                         {
@@ -334,7 +466,7 @@ def run(args: argparse.Namespace) -> None:
                         bound,
                     )
                     community.medium = medium
-                    solution = run_tradeoff(community, fraction=1.0)
+                    solution = run_tradeoff(community, fraction=tradeoff)
                     save_solution(solution, prefix)
                     manifest_rows.append(
                         {
@@ -353,14 +485,14 @@ def run(args: argparse.Namespace) -> None:
                     )
                     progress.update(ctx_task, advance=1, status="complete")
                 except Exception as error:
-                    failure_rows.append(
-                        {
-                            "sample": sample,
-                            "scenario": scenario,
-                            "parameter_value": bound,
-                            "error_type": type(error).__name__,
-                            "error_message": str(error),
-                        }
+                    _remember_medium_failure(
+                        failure_rows,
+                        prefix,
+                        sample=sample,
+                        scenario=scenario,
+                        parameter_value=bound,
+                        error_type=type(error).__name__,
+                        error_message=str(error),
                     )
                     progress.console.print(
                         f"[{sample}/{scenario}] failed: {error}"

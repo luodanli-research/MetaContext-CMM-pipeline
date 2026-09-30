@@ -8,8 +8,11 @@ This pipeline always runs two independent cooperative-tradeoff simulations:
     environmental or transcriptomic constraints.
 
 ``ctx``
-    A freshly loaded baseline community with both the sample-specific medium
-    and sample-specific RIPTiDe reaction bounds applied.
+    A baseline community with sample-specific medium and RIPTiDe bounds.
+    The constrained community is written as ``<sample>-ctx.pickle`` *before*
+    the first ctx solve (pre-solve starting model). Formal ctx fluxes are
+    obtained by loading that pickle into a fresh instance and solving once.
+    The pickle is never overwritten after solving.
 """
 
 from __future__ import annotations
@@ -30,13 +33,14 @@ from _cli_utils import configure_logging
 
 
 LOGGER = logging.getLogger("cmm.simulate")
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 MIN_GROWTH = 1e-7
 TRADEOFF_FRACTION = 1.0
 PFBA = True
-# After an infeasible first solve, retry with these solver tolerances.
-# Feasibility is set together with optimality: probes on consensus/SW50
-# showed feasibility (not MICOM atol/rtol alone) rescues the solve.
-INFEASIBLE_TOLERANCE_RETRIES = (1e-7, 1e-5)
+# After an infeasible first solve, retry with successively tighter solver
+# tolerances. Feasibility is set together with optimality (not MICOM
+# atol/rtol alone). Ladder is monotonic tighter only: 1e-6 → 1e-7 → 1e-8.
+INFEASIBLE_TOLERANCE_RETRIES = (1e-7, 1e-8)
 
 REQUIRED_MEDIUM_COLUMNS = {"reaction", "flux", "sample_id"}
 REQUIRED_CONTEXT_COLUMNS = {
@@ -74,8 +78,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         required=True,
         type=Path,
         help=(
-            "Integrated RIPTiDe context-bounds CSV. The constrained community "
-            "pickle is written beside this file."
+            "Integrated RIPTiDe context-bounds CSV. The pre-solve constrained "
+            "community pickle (<sample>-ctx.pickle) is written beside this "
+            "file (lexical parent; does not follow a symlink into another tree)."
         ),
     )
     parser.add_argument(
@@ -92,7 +97,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=Path,
         help=(
             "Directory in which to write bsl and ctx simulation result tables. "
-            "The ctx model is written beside --context-file."
+            "The pre-solve ctx pickle is written beside --context-file."
         ),
     )
     parser.add_argument(
@@ -369,12 +374,12 @@ def solve_cooperative_tradeoff(
     pfba: bool = PFBA,
     mode: str = "simulation",
 ):
-    """Run cooperative tradeoff, retrying infeasible solves with looser/tighter tol.
+    """Run cooperative tradeoff, retrying tighter tolerances if infeasible.
 
-    Attempt order:
+    Attempt order (monotonic tighter; three tries total):
     1. current solver tolerances (MICOM default feasibility ``1e-6``);
     2. feasibility/optimality ``1e-7``;
-    3. feasibility/optimality ``1e-5``.
+    3. feasibility/optimality ``1e-8``.
     """
     community.solver.configuration.verbosity = 0
     attempts: list[float | None] = [None, *INFEASIBLE_TOLERANCE_RETRIES]
@@ -480,7 +485,11 @@ def save_context_model(
     sample: str,
     context_dir: Path,
 ) -> Path:
-    """Save the constrained context community atomically."""
+    """Save the pre-solve constrained context community atomically.
+
+    Call only after medium and RIPTiDe bounds are applied and *before* the
+    first cooperative-tradeoff solve. Do not call again after solving.
+    """
     context_dir.mkdir(parents=True, exist_ok=True)
     output_path = context_dir / f"{sample}-ctx.pickle"
     temporary_path = output_path.with_name(f".{output_path.name}.tmp")
@@ -506,6 +515,33 @@ def save_context_model(
     return output_path
 
 
+def context_model_directory(context_file: Path) -> Path:
+    """Directory for pre-solve ctx pickle (lexical parent; no symlink follow).
+
+    Using ``absolute()`` rather than ``resolve()`` keeps writes beside a
+    context_bounds.csv path even if that path is a symlink into another tree.
+    Prefer copying bounds into the run root so the parent is a real new-tree
+    directory.
+    """
+    return context_file.expanduser().absolute().parent
+
+
+def _repo_relative(path: str | Path) -> str:
+    candidate = Path(path).expanduser()
+    absolute = (
+        candidate.resolve()
+        if candidate.is_absolute()
+        else (Path.cwd() / candidate).resolve()
+    )
+    try:
+        relative = absolute.relative_to(_REPO_ROOT)
+    except ValueError:
+        return absolute.as_posix()
+    if not relative.parts:
+        return "."
+    return relative.as_posix()
+
+
 def run_pipeline(
     sample: str,
     baseline_cmm_dir: Path,
@@ -514,9 +550,10 @@ def run_pipeline(
     out_dir: Path,
 ) -> None:
     """Run independent bsl and fully constrained ctx simulations."""
-    out_dir = out_dir.resolve()
+    out_dir = out_dir.expanduser().absolute()
     out_dir.mkdir(parents=True, exist_ok=True)
-    context_dir = context_file.resolve().parent
+    context_file = context_file.expanduser()
+    context_dir = context_model_directory(context_file)
     progress_columns = (
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -528,7 +565,7 @@ def run_pipeline(
     with Progress(*progress_columns) as progress:
         task = progress.add_task(
             f"[{sample}] Simulation",
-            total=6,
+            total=7,
             step="loading bsl CMM",
         )
         bsl_community = load_baseline_community(baseline_cmm_dir, sample)
@@ -541,31 +578,40 @@ def run_pipeline(
         bsl_growth = float(bsl_solution.growth_rate)
         del bsl_solution
         del bsl_community
-        progress.update(task, advance=1, step="loading ctx CMM")
+        progress.update(task, advance=1, step="building ctx CMM")
 
         ctx_community = load_baseline_community(baseline_cmm_dir, sample)
         sample_medium = load_sample_medium(medium_file, sample)
         medium_summary = apply_sample_medium(ctx_community, sample_medium)
         sample_context = load_sample_context(context_file, sample)
         context_summary = apply_context_bounds(ctx_community, sample_context)
-        progress.update(task, advance=1, step="solving ctx")
+        progress.update(task, advance=1, step="saving pre-solve ctx")
 
-        ctx_solution = run_cooperative_tradeoff(ctx_community, mode="ctx")
-        progress.update(task, advance=1, step="saving ctx")
-        save_solution(ctx_solution, sample, mode="ctx", out_dir=out_dir)
-        ctx_growth = float(ctx_solution.growth_rate)
         context_model_path = save_context_model(
             ctx_community,
             sample,
             context_dir,
         )
+        del ctx_community
+        progress.update(task, advance=1, step="loading pre-solve ctx")
+
+        ctx_community = load_pickle(context_model_path)
+        progress.update(task, advance=1, step="solving ctx")
+
+        ctx_solution = run_cooperative_tradeoff(ctx_community, mode="ctx")
+        progress.update(task, advance=1, step="saving ctx flux")
+        save_solution(ctx_solution, sample, mode="ctx", out_dir=out_dir)
+        ctx_growth = float(ctx_solution.growth_rate)
+        del ctx_solution
+        del ctx_community
         progress.update(task, advance=1, step="complete")
 
     LOGGER.info(
         (
             "[%s] Simulation complete: %d taxa; bsl growth=%.10g; "
             "ctx growth=%.10g; medium=%d/%d positive exchanges applied; "
-            "context=%d growth + %d GPR constraints; results=%s; model=%s"
+            "context=%d growth + %d GPR constraints; results=%s; "
+            "pre-solve model=%s"
         ),
         sample,
         bsl_taxa,
@@ -575,8 +621,8 @@ def run_pipeline(
         medium_summary["requested_positive_rows"],
         context_summary["growth_constraints"],
         context_summary["gpr_constraints"],
-        out_dir,
-        context_model_path,
+        _repo_relative(out_dir),
+        _repo_relative(context_model_path),
     )
 
 

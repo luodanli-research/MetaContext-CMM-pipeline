@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import math
 import os
 import subprocess
 import sys
@@ -178,6 +179,33 @@ def build_parser(preset: dict[str, Any]) -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--solve-tradeoff",
+        type=float,
+        default=1.0,
+        help=(
+            "Cooperative-tradeoff fraction used by medium and reaction "
+            "solves (default: 1). Does not run the tradeoff-sensitivity stage."
+        ),
+    )
+    parser.add_argument(
+        "--prior-tradeoff-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Existing sensitivity_tradeoff directory to include in metric "
+            "plots without solving that stage."
+        ),
+    )
+    parser.add_argument(
+        "--prior-medium-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Existing sensitivity_medium directory to include in metric "
+            "plots without solving that stage."
+        ),
+    )
+    parser.add_argument(
         "--reaction-fraction",
         type=float,
         default=5.0,
@@ -203,6 +231,16 @@ def build_parser(preset: dict[str, Any]) -> argparse.ArgumentParser:
         type=int,
         default=1,
         help="Parallel sample workers for sensitivity_reaction (default: 1).",
+    )
+    parser.add_argument(
+        "--solve-timeout",
+        type=float,
+        default=1800.0,
+        help=(
+            "Wall-clock seconds for one sensitivity_reaction sample/realization "
+            "worker (default: 1800). On timeout the worker is killed, the job is "
+            "recorded as failed, and the schedule continues. Use <=0 to disable."
+        ),
     )
     parser.add_argument(
         "--ac-jobs",
@@ -392,6 +430,33 @@ def formal_simulation_complete(directory: Path, sample: str) -> bool:
     )
 
 
+def formal_sample_ready(
+    context_dir: Path,
+    formal_dir: Path,
+    sample: str,
+) -> bool:
+    """True when pre-solve ctx pickle and formal bsl/ctx fluxes exist."""
+
+    return (
+        nonempty(context_dir / f"{sample}-ctx.pickle")
+        and formal_simulation_complete(formal_dir, sample)
+    )
+
+
+def warn_if_legacy_output_root(output_root: Path) -> None:
+    """Warn when writing into the published case_study/outputs tree."""
+
+    resolved = output_root.expanduser().resolve()
+    text = str(resolved).replace("\\", "/")
+    if text.rstrip("/").endswith("case_study/outputs") or "/case_study/outputs/" in text + "/":
+        print(
+            "[WARN] --output-root points at case_study/outputs (or under it). "
+            "Pre-solve validation/regeneration should use an isolated run root "
+            "such as case_study/runs/presolve_unified_YYYYMMDD/ so old evidence "
+            "is not overwritten. See pipeline/bootstrap_presolve_run_root.py."
+        )
+
+
 def context_bounds_mags(context_file: Path, sample: str) -> set[str]:
     """Return mag_id values present for ``sample`` in context_bounds.csv."""
 
@@ -487,9 +552,20 @@ def scenario_flux(
     scenario: str,
     mode: str,
 ) -> bool:
+    """True when this job already has a flux file or a recorded failure.
+
+    A nonempty ``*-failed.txt`` marker is treated like an existing output so
+    the stage is not entered again just to retry a known solver failure.
+    """
+
+    patterns = (
+        f"{sample}*{scenario}*{mode}-flux.csv",
+        f"{sample}*{scenario}*{mode}-failed.txt",
+    )
     return any(
         nonempty(path)
-        for path in directory.glob(f"{sample}*{scenario}*{mode}-flux.csv")
+        for pattern in patterns
+        for path in directory.glob(pattern)
     )
 
 
@@ -536,8 +612,22 @@ def reaction_complete(
     samples: Sequence[str],
     realizations: int,
 ) -> bool:
+    """True when every realization has a flux, a failure marker, or bak LHS.
+
+    Quarantined LHS under ``01_lhs/<sample>/bak/`` is a recorded failed
+    attempt and is not solved again.
+    """
+
+    lhs_root = directory / "01_lhs"
+
+    def settled(sample: str, scenario: str) -> bool:
+        if scenario_flux(directory / scenario, sample, scenario, "ctx"):
+            return True
+        bak = lhs_root / sample / "bak" / f"LHS_sample_{scenario}.csv"
+        return nonempty(bak)
+
     return all(
-        scenario_flux(directory / scenario, sample, scenario, "ctx")
+        settled(sample, scenario)
         for sample in samples
         for realization in range(realizations + 1)
         for scenario in (f"S{realization:03d}",)
@@ -550,8 +640,15 @@ def reaction_lhs_complete(
     realizations: int,
 ) -> bool:
     lhs_root = directory / "01_lhs"
+
+    def _lhs_present(sample: str, realization: int) -> bool:
+        name = f"LHS_sample_S{realization:03d}.csv"
+        live = lhs_root / sample / name
+        bak = lhs_root / sample / "bak" / name
+        return nonempty(live) or nonempty(bak)
+
     return all(
-        nonempty(lhs_root / sample / f"LHS_sample_S{realization:03d}.csv")
+        _lhs_present(sample, realization)
         for sample in samples
         for realization in range(realizations + 1)
     )
@@ -606,6 +703,23 @@ def metric_complete(
     return all(nonempty(path) for path in (*tables, *figures))
 
 
+def include_tradeoff_half_single(args: argparse.Namespace) -> bool:
+    """Case-study EAI/ARB singles also include tradeoff 0.5.
+
+    The example tutorial pipeline keeps its original single set (formal only).
+    """
+
+    if getattr(args, "pipeline_label", "") == "example":
+        return False
+    if "tradeoff" not in args.sensitivity:
+        return False
+    return any(abs(float(value) - 0.5) <= 1e-12 for value in args.tradeoffs)
+
+
+def tradeoff_half_single_dir(simulation_root: Path) -> Path:
+    return simulation_root / "sensitivity_tradeoff" / "tradeoff0.5"
+
+
 def metric_table_has_dataset(
     directory: Path, metric: str, dataset: str
 ) -> bool:
@@ -645,6 +759,19 @@ def validate_configuration(args: argparse.Namespace) -> None:
     if "tradeoff" in args.sensitivity:
         if any(not 0 < value <= 1 for value in args.tradeoffs):
             raise ValueError("--tradeoffs values must be in (0, 1].")
+    if "medium" in args.sensitivity or "reaction" in args.sensitivity:
+        if not 0 < float(args.solve_tradeoff) <= 1:
+            raise ValueError("--solve-tradeoff must be in (0, 1].")
+    if args.prior_tradeoff_dir is not None and "tradeoff" in args.sensitivity:
+        raise ValueError(
+            "--prior-tradeoff-dir cannot be combined with "
+            "--sensitivity tradeoff (that stage would write its own batch)."
+        )
+    if args.prior_medium_dir is not None and "medium" in args.sensitivity:
+        raise ValueError(
+            "--prior-medium-dir cannot be combined with "
+            "--sensitivity medium (that stage would write its own batch)."
+        )
     if "reaction" in args.sensitivity:
         if not 0 < args.reaction_fraction < 100:
             raise ValueError("--reaction-fraction must be in (0, 100).")
@@ -652,6 +779,8 @@ def validate_configuration(args: argparse.Namespace) -> None:
             raise ValueError("--reaction-realizations must be at least 1.")
         if args.reaction_jobs < 1:
             raise ValueError("--reaction-jobs must be at least 1.")
+        if args.solve_timeout is not None and not math.isfinite(args.solve_timeout):
+            raise ValueError("--solve-timeout must be finite (use <=0 to disable).")
 
 
 def run_baselines(
@@ -666,10 +795,18 @@ def run_baselines(
     verbose: bool,
 ) -> None:
     prepare_directory(baseline_dir, check_only)
+    baseline_is_symlink = baseline_dir.is_symlink()
     for sample in samples:
         if baseline_complete(baseline_dir, sample) and not force:
             print(f"[REUSE] baseline/{sample}")
             continue
+        if baseline_is_symlink:
+            raise SystemExit(
+                f"Refusing to write baseline/{sample} through symlink "
+                f"{baseline_dir} (read-only reuse for isolated run roots). "
+                "Use a real 01_baseline directory, or omit --force when "
+                "pickles already exist under the linked tree."
+            )
         command: list[str | Path] = [
             python_bin,
             BUILD_SCRIPT,
@@ -815,10 +952,17 @@ def run_sensitivities(
     medium_reaction_list: Path,
     reaction_list: Path,
     failures: list[str],
+    samples: Sequence[str],
 ) -> dict[str, Path]:
-    """Run selected sensitivity stages; return existing batch dirs."""
+    """Run selected sensitivity stages for formal-ready samples only."""
 
     batch_dirs: dict[str, Path] = {}
+    if not samples:
+        print(
+            "[SKIP] sensitivity: no samples with pre-solve ctx pickle and "
+            "formal bsl/ctx fluxes in this output root"
+        )
+        return batch_dirs
 
     if "medium" in args.sensitivity:
         medium_dir = prepare_directory(
@@ -827,7 +971,7 @@ def run_sensitivities(
         )
         batch_dirs["sensitivity_medium"] = medium_dir
         if (
-            medium_complete(medium_dir, args.sample, args.medium_bounds)
+            medium_complete(medium_dir, samples, args.medium_bounds)
             and not args.force
         ):
             print("[REUSE] sensitivity_medium")
@@ -836,7 +980,7 @@ def run_sensitivities(
                 python_bin,
                 MEDIUM_SCRIPT,
                 "--sample",
-                *args.sample,
+                *samples,
                 "--baseline-cmm-dir",
                 baseline_dir,
                 "--medium-file",
@@ -851,6 +995,8 @@ def run_sensitivities(
                 formal_dir,
                 "--bounds",
                 *(f"{value:g}" for value in args.medium_bounds),
+                "--tradeoff",
+                f"{float(args.solve_tradeoff):g}",
             ]
             if args.force:
                 command.append("--force")
@@ -869,7 +1015,7 @@ def run_sensitivities(
         )
         batch_dirs["sensitivity_tradeoff"] = tradeoff_dir
         if (
-            tradeoff_complete(tradeoff_dir, args.sample, args.tradeoffs)
+            tradeoff_complete(tradeoff_dir, samples, args.tradeoffs)
             and not args.force
         ):
             print("[REUSE] sensitivity_tradeoff")
@@ -878,11 +1024,9 @@ def run_sensitivities(
                 python_bin,
                 TRADEOFF_SCRIPT,
                 "--sample",
-                *args.sample,
+                *samples,
                 "--baseline-cmm-dir",
                 baseline_dir,
-                "--medium-file",
-                medium_file,
                 "--context-cmm-dir",
                 context_dir,
                 "--output-dir",
@@ -909,7 +1053,7 @@ def run_sensitivities(
         if (
             reaction_complete(
                 reaction_dir,
-                args.sample,
+                samples,
                 args.reaction_realizations,
             )
             and not args.force
@@ -921,7 +1065,7 @@ def run_sensitivities(
                 not args.force
                 and reaction_lhs_complete(
                     reaction_dir,
-                    args.sample,
+                    samples,
                     args.reaction_realizations,
                 )
             ):
@@ -934,7 +1078,7 @@ def run_sensitivities(
                 python_bin,
                 REACTION_SCRIPT,
                 "--sample",
-                *args.sample,
+                *samples,
                 "--baseline-cmm-dir",
                 baseline_dir,
                 "--medium-file",
@@ -955,6 +1099,10 @@ def run_sensitivities(
                 str(args.reaction_seed),
                 "--jobs",
                 str(args.reaction_jobs),
+                "--solve-timeout",
+                f"{args.solve_timeout:g}",
+                "--tradeoff",
+                f"{float(args.solve_tradeoff):g}",
             ]
             if args.force:
                 command.append("--force")
@@ -969,7 +1117,7 @@ def run_sensitivities(
     return batch_dirs
 
 
-def pipeline(args: argparse.Namespace) -> None:
+def pipeline(args: argparse.Namespace) -> int:
     ensure_package_cwd()
     validate_configuration(args)
     failures: list[str] = []
@@ -1025,6 +1173,7 @@ def pipeline(args: argparse.Namespace) -> None:
     )
     formal_dir = simulation_root / FORMAL_CONTEXT_NAME
     analysis_dir = prepare_directory(args.analysis_dir, args.check_only)
+    warn_if_legacy_output_root(args.output_root)
 
     print("[CONFIG] MetaContext-CMM pipeline")
     print(
@@ -1050,6 +1199,10 @@ def pipeline(args: argparse.Namespace) -> None:
         + (", ".join(args.metrics) if args.metrics else "(none)")
     )
     print(f"[CONFIG] analysis dir: {analysis_dir}")
+    print(
+        "[CONFIG] ctx pickle: pre-solve model beside context_bounds.csv; "
+        "never overwritten after formal ctx solve"
+    )
 
     print("\n=== 1. Baseline / RIPTiDe / context (formal) ===")
     run_baselines(
@@ -1080,121 +1233,223 @@ def pipeline(args: argparse.Namespace) -> None:
         failures=failures,
     )
 
-    print("\n=== 2. Sensitivity batches ===")
-    batch_dirs = run_sensitivities(
-        args=args,
-        python_bin=python_bin,
-        baseline_dir=baseline_dir,
-        context_dir=context_dir,
-        formal_dir=formal_dir,
-        simulation_root=prepare_directory(simulation_root, args.check_only),
-        medium_file=medium_file,
-        medium_reaction_list=medium_reaction_list or Path(),
-        reaction_list=reaction_list or Path(),
-        failures=failures,
-    )
-
-    if args.metrics:
-        print("\n=== 3. Analysis ===")
-        single_dirs: list[Path] = [formal_dir]
+    ready_samples = [
+        sample
+        for sample in args.sample
+        if args.check_only
+        or formal_sample_ready(context_dir, formal_dir, sample)
+    ]
+    blocked_samples = [
+        sample for sample in args.sample if sample not in ready_samples
+    ]
+    if blocked_samples and not args.check_only:
         print(
-            "[CONFIG] analysis single-dirs: "
-            + ", ".join(str(as_relative(path)) for path in single_dirs)
+            "[GATE] formal not ready (need pre-solve "
+            f"<sample>-ctx.pickle + bsl/ctx fluxes) for: "
+            f"{', '.join(blocked_samples)}"
+        )
+        for sample in blocked_samples:
+            failures.append(f"formal_gate/{sample}")
+
+    print("\n=== 2. Sensitivity batches ===")
+    if args.sensitivity and blocked_samples and not ready_samples:
+        print(
+            "[SKIP] sensitivity: no formal-ready samples in this output root; "
+            "refusing to fall back to other trees"
+        )
+        batch_dirs: dict[str, Path] = {}
+    elif args.sensitivity and blocked_samples:
+        print(
+            "[GATE] running sensitivity only for formal-ready samples: "
+            + ", ".join(ready_samples)
+        )
+        batch_dirs = run_sensitivities(
+            args=args,
+            python_bin=python_bin,
+            baseline_dir=baseline_dir,
+            context_dir=context_dir,
+            formal_dir=formal_dir,
+            simulation_root=prepare_directory(simulation_root, args.check_only),
+            medium_file=medium_file,
+            medium_reaction_list=medium_reaction_list or Path(),
+            reaction_list=reaction_list or Path(),
+            failures=failures,
+            samples=ready_samples,
+        )
+    else:
+        batch_dirs = run_sensitivities(
+            args=args,
+            python_bin=python_bin,
+            baseline_dir=baseline_dir,
+            context_dir=context_dir,
+            formal_dir=formal_dir,
+            simulation_root=prepare_directory(simulation_root, args.check_only),
+            medium_file=medium_file,
+            medium_reaction_list=medium_reaction_list or Path(),
+            reaction_list=reaction_list or Path(),
+            failures=failures,
+            samples=ready_samples if not args.check_only else args.sample,
         )
 
-        analysis_batch_dirs: list[Path] = []
-        for name, path in batch_dirs.items():
-            if name == "sensitivity_reaction" and not reaction_data_available(
-                path
-            ):
-                print("[EMPTY] reaction batch omitted from analysis inputs")
-                continue
-            if path.is_dir() or args.check_only:
-                analysis_batch_dirs.append(path)
+    analysis_samples = ready_samples if not args.check_only else args.sample
+    if args.metrics:
+        print("\n=== 3. Analysis ===")
+        if not analysis_samples and not args.check_only:
+            print(
+                "[SKIP] analysis: no formal-ready samples; "
+                "refusing to mix legacy outputs"
+            )
+        else:
+            single_dirs: list[Path] = [formal_dir]
+            print(
+                "[CONFIG] analysis single-dirs: "
+                + ", ".join(str(as_relative(path)) for path in single_dirs)
+            )
 
-        has_batches = bool(analysis_batch_dirs)
-        for metric in args.metrics:
-            metric_dir = prepare_directory(
-                analysis_dir / metric,
-                args.check_only,
-            )
-            reusable = (
-                metric_complete(
-                    metric_dir, metric, has_batches=has_batches
-                )
-                and not args.force
-            )
-            # Drop stale analysis tables that still include the removed GA single.
-            if reusable and metric_table_has_dataset(
-                metric_dir, metric, LEGACY_GA_DATASET_NAME
-            ):
+            analysis_batch_dirs: list[Path] = []
+            for name, path in batch_dirs.items():
+                if name == "sensitivity_reaction" and not reaction_data_available(
+                    path
+                ):
+                    print("[EMPTY] reaction batch omitted from analysis inputs")
+                    continue
+                if path.is_dir() or args.check_only:
+                    analysis_batch_dirs.append(path)
+            if args.prior_tradeoff_dir is not None:
+                prior_tradeoff = as_relative(args.prior_tradeoff_dir)
+                if not prior_tradeoff.is_dir() and not args.check_only:
+                    raise SystemExit(
+                        "Missing --prior-tradeoff-dir: "
+                        f"{prior_tradeoff}"
+                    )
                 print(
-                    f"[STALE] analysis/{metric} still contains "
-                    f"'{LEGACY_GA_DATASET_NAME}' single dataset; rerunning"
+                    "[CONFIG] analysis prior tradeoff batch: "
+                    f"{prior_tradeoff}"
                 )
-                reusable = False
-            if reusable and metric == "ac":
-                # Reuse AC CSVs; refresh network / heatmap / elemental figures.
-                print("[REUSE] analysis/ac tables; plots-only")
+                analysis_batch_dirs.append(prior_tradeoff)
+            if args.prior_medium_dir is not None:
+                prior_medium = as_relative(args.prior_medium_dir)
+                if not prior_medium.is_dir() and not args.check_only:
+                    raise SystemExit(
+                        "Missing --prior-medium-dir: "
+                        f"{prior_medium}"
+                    )
+                print(
+                    "[CONFIG] analysis prior medium batch: "
+                    f"{prior_medium}"
+                )
+                analysis_batch_dirs.append(prior_medium)
+
+            has_batches = bool(analysis_batch_dirs)
+            for metric in args.metrics:
+                metric_dir = prepare_directory(
+                    analysis_dir / metric,
+                    args.check_only,
+                )
+                reusable = (
+                    metric_complete(
+                        metric_dir, metric, has_batches=has_batches
+                    )
+                    and not args.force
+                )
+                # Drop stale analysis tables that still include the removed GA single.
+                if reusable and metric_table_has_dataset(
+                    metric_dir, metric, LEGACY_GA_DATASET_NAME
+                ):
+                    print(
+                        f"[STALE] analysis/{metric} still contains "
+                        f"'{LEGACY_GA_DATASET_NAME}' single dataset; rerunning"
+                    )
+                    reusable = False
+                if reusable and metric == "ac":
+                    # Reuse AC CSVs; refresh network / heatmap / elemental figures.
+                    print("[REUSE] analysis/ac tables; plots-only")
+                    command = [
+                        python_bin,
+                        AC_SCRIPT,
+                        "--plots-only",
+                        "--plot",
+                        "network",
+                        "heatmap",
+                        "elemental",
+                        "--sample",
+                        *analysis_samples,
+                        "--output-dir",
+                        metric_dir,
+                        "--ge-file",
+                        ge_file,
+                        "--guild-file",
+                        guild_file,
+                        "--heatmap-guilds",
+                        *args.ac_heatmap_guilds,
+                    ]
+                    run_command(
+                        command,
+                        check_only=args.check_only,
+                        label="analysis/ac (plots-only)",
+                    )
+                    continue
+                metric_single_dirs = list(single_dirs)
+                if metric in {"eai", "arb"} and include_tradeoff_half_single(args):
+                    half_dir = tradeoff_half_single_dir(simulation_root)
+                    if half_dir.is_dir() or args.check_only:
+                        metric_single_dirs.append(half_dir)
+                        print(
+                            f"[CONFIG] analysis/{metric} extra single-dir: "
+                            f"{as_relative(half_dir)}"
+                        )
+                    else:
+                        print(
+                            f"[WARN] analysis/{metric}: tradeoff0.5 single "
+                            f"omitted; directory missing: {as_relative(half_dir)}"
+                        )
+                if (
+                    reusable
+                    and metric in {"eai", "arb"}
+                    and include_tradeoff_half_single(args)
+                    and not metric_table_has_dataset(
+                        metric_dir, metric, "tradeoff0.5"
+                    )
+                ):
+                    print(
+                        f"[STALE] analysis/{metric} single values lack "
+                        "tradeoff0.5; rerunning"
+                    )
+                    reusable = False
+                if reusable:
+                    print(f"[REUSE] analysis/{metric}")
+                    continue
                 command = [
                     python_bin,
-                    AC_SCRIPT,
-                    "--plots-only",
-                    "--plot",
-                    "network",
-                    "heatmap",
-                    "elemental",
+                    METRIC_SCRIPTS[metric],
+                    "--single-dir",
+                    *metric_single_dirs,
                     "--sample",
-                    *args.sample,
+                    *analysis_samples,
                     "--output-dir",
                     metric_dir,
-                    "--ge-file",
-                    ge_file,
-                    "--guild-file",
-                    guild_file,
-                    "--heatmap-guilds",
-                    *args.ac_heatmap_guilds,
                 ]
+                if analysis_batch_dirs:
+                    command.extend(["--batch-dir", *analysis_batch_dirs])
+                if metric == "ac":
+                    command.extend(["--context-cmm-dir", context_dir])
+                    command.extend(["--ge-file", ge_file])
+                    command.extend(["--guild-file", guild_file])
+                    command.extend(["--method", args.ac_method])
+                    command.extend(["--jobs", str(args.ac_jobs)])
+                    command.extend(["--threads", str(args.ac_threads)])
+                    command.extend(
+                        ["--heatmap-guilds", *args.ac_heatmap_guilds]
+                    )
+                    if args.force:
+                        command.append("--force")
+                elif metric == "arb":
+                    command.extend(["--ge-file", ge_file])
                 run_command(
                     command,
                     check_only=args.check_only,
-                    label="analysis/ac (plots-only)",
+                    label=f"analysis/{metric}",
                 )
-                continue
-            if reusable:
-                print(f"[REUSE] analysis/{metric}")
-                continue
-            command: list[str | Path] = [
-                python_bin,
-                METRIC_SCRIPTS[metric],
-                "--single-dir",
-                *single_dirs,
-                "--sample",
-                *args.sample,
-                "--output-dir",
-                metric_dir,
-            ]
-            if analysis_batch_dirs:
-                command.extend(["--batch-dir", *analysis_batch_dirs])
-            if metric == "ac":
-                command.extend(["--context-cmm-dir", context_dir])
-                command.extend(["--ge-file", ge_file])
-                command.extend(["--guild-file", guild_file])
-                command.extend(["--method", args.ac_method])
-                command.extend(["--jobs", str(args.ac_jobs)])
-                command.extend(["--threads", str(args.ac_threads)])
-                command.extend(
-                    ["--heatmap-guilds", *args.ac_heatmap_guilds]
-                )
-                if args.force:
-                    command.append("--force")
-            elif metric == "arb":
-                command.extend(["--ge-file", ge_file])
-            run_command(
-                command,
-                check_only=args.check_only,
-                label=f"analysis/{metric}",
-            )
     else:
         print("\n=== 3. Analysis skipped (no --metrics) ===")
 
@@ -1210,13 +1465,14 @@ def pipeline(args: argparse.Namespace) -> None:
         print("Check-only mode: no model, simulation, or analysis command ran.")
     else:
         play_completion_sound()
+    return 0 if not failures else 1
 
 
 def main(preset: dict[str, Any]) -> int:
     args = build_parser(preset).parse_args()
+    args.pipeline_label = preset["label"]
     try:
-        pipeline(args)
+        return pipeline(args)
     except BaseException:
         play_failure_sound()
         raise
-    return 0

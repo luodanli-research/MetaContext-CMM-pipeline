@@ -12,6 +12,28 @@ import pandas as pd
 PROJECT_DIR = Path(
     os.environ.get("MICOM310_PROJECT_DIR", Path(__file__).resolve().parents[2])
 ).expanduser().resolve()
+
+
+def repo_relative(path: str | Path) -> str:
+    """Return a repository-relative path for values stored in outputs.
+
+    Paths inside the repository become relative to ``PROJECT_DIR`` (``.`` for
+    the root itself). Paths outside the repository stay absolute.
+    """
+
+    candidate = Path(path).expanduser()
+    absolute = (
+        candidate.resolve()
+        if candidate.is_absolute()
+        else (Path.cwd() / candidate).resolve()
+    )
+    try:
+        relative = absolute.relative_to(PROJECT_DIR)
+    except ValueError:
+        return absolute.as_posix()
+    if not relative.parts:
+        return "."
+    return relative.as_posix()
 WORKFLOW_DIR = PROJECT_DIR / "workflow"
 RESOURCE_DIR = PROJECT_DIR / "resource"
 # GitHub defaults: example/. Override via CLI or set_taxon_input_files().

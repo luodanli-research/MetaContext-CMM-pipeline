@@ -29,6 +29,25 @@ MIN_GROWTH = 1e-7
 PFBA = True
 DEFAULT_MEDIUM_BOUND = 1000.0
 MEDIUM_BOUND_ATOL = 1e-9
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _repo_relative(path: str | Path) -> str:
+    """Repository-relative path for values written into result tables."""
+
+    candidate = Path(path).expanduser()
+    absolute = (
+        candidate.resolve()
+        if candidate.is_absolute()
+        else (Path.cwd() / candidate).resolve()
+    )
+    try:
+        relative = absolute.relative_to(_REPO_ROOT)
+    except ValueError:
+        return absolute.as_posix()
+    if not relative.parts:
+        return "."
+    return relative.as_posix()
 
 
 def sensitivity_progress_columns() -> tuple:
@@ -127,9 +146,18 @@ def find_context_cmm(simulation_dir: str | Path, sample: str) -> Path:
     candidate = directory / f"{sample}-ctx.pickle"
     if not candidate.is_file():
         raise FileNotFoundError(
-            f"Context community pickle is missing: {candidate}"
+            f"Pre-solve context community pickle is missing: {candidate}. "
+            "Run formal simulation (simulate_community_model / pipeline "
+            "context stage) so <sample>-ctx.pickle is written beside "
+            "context_bounds.csv before the first ctx solve."
         )
     return candidate
+
+
+def load_context_community(simulation_dir: str | Path, sample: str):
+    """Load the pre-solve ``<sample>-ctx.pickle`` community."""
+
+    return load_pickle(find_context_cmm(simulation_dir, sample))
 
 
 def find_context_file(context_dir: str | Path, sample: str) -> Path:
@@ -243,10 +271,10 @@ def ensure_bound1000_from_formal(
     """Materialize bound1000 from formal ctx flux copy or by solving ctx CMM.
 
     Preference order:
-    1. copy ``{sample}-ctx-flux.csv`` from the ctx-model folder or
-       ``baseline_flux_dir``;
-    2. otherwise load ``{sample}-ctx.pickle`` and solve cooperative tradeoff
-       without changing medium.
+    1. copy ``{sample}-ctx-flux.csv`` from ``baseline_flux_dir`` (same-batch
+       formal context fluxes) or beside the ctx-model folder;
+    2. otherwise load pre-solve ``{sample}-ctx.pickle`` and solve cooperative
+       tradeoff without changing medium (copy preferred; solve is fallback).
     """
 
     flux_out = output_prefix.with_name(output_prefix.name + "-flux.csv")
@@ -263,9 +291,10 @@ def ensure_bound1000_from_formal(
     )
     if formal_flux is not None:
         copy_file_atomic(formal_flux, flux_out)
+        clear_failure(output_prefix)
         return {
             "status": "reused_formal_flux",
-            "formal_flux_source": str(formal_flux),
+            "formal_flux_source": _repo_relative(formal_flux),
             "flux_file": flux_out.name,
         }
 
@@ -283,10 +312,6 @@ def ensure_bound1000_from_formal(
 
 def load_bsl_community(baseline_cmm_dir: str | Path, sample: str):
     return load_pickle(find_baseline_cmm(baseline_cmm_dir, sample))
-
-
-def load_context_community(simulation_dir: str | Path, sample: str):
-    return load_pickle(find_context_cmm(simulation_dir, sample))
 
 
 def load_sample_medium_data(
@@ -319,7 +344,12 @@ def build_fresh_context_community(
     sample_medium: pd.Series,
     sample_context: pd.DataFrame,
 ):
-    """Build ctx strictly as bsl CMM -> medium -> context bounds."""
+    """Build ctx as bsl CMM -> medium -> context bounds (diagnostic helper).
+
+    Formal production flow saves this state as pre-solve ``*-ctx.pickle`` then
+    reloads before solving. Sensitivity tradeoff loads that pickle instead of
+    calling this helper.
+    """
 
     community = load_bsl_community(baseline_cmm_dir, sample)
     medium_summary = FORMAL_SIMULATION.apply_sample_medium(
@@ -452,12 +482,110 @@ def save_solution(solution, output_prefix: Path) -> dict[str, Path]:
         "flux": output_prefix.with_name(output_prefix.name + "-flux.csv"),
     }
     _atomic_dataframe(solution.fluxes, outputs["flux"])
+    clear_failure(output_prefix)
     return outputs
 
 
 def solution_complete(output_prefix: Path) -> bool:
     path = output_prefix.with_name(output_prefix.name + "-flux.csv")
     return path.is_file() and path.stat().st_size > 0
+
+
+def failure_marker_path(output_prefix: Path) -> Path:
+    """Durable record that this prefix was already attempted and failed."""
+
+    return output_prefix.with_name(output_prefix.name + "-failed.txt")
+
+
+def recorded_failure(output_prefix: Path) -> tuple[str, str] | None:
+    """Return ``(error_type, error_message)`` when a failure marker exists."""
+
+    path = failure_marker_path(output_prefix)
+    if not path.is_file() or path.stat().st_size <= 0:
+        return None
+    lines = path.read_text(encoding="utf-8").splitlines()
+    error_type = lines[0] if lines else "failed"
+    error_message = "\n".join(lines[1:])
+    return error_type, error_message
+
+
+def failure_recorded(output_prefix: Path) -> bool:
+    return recorded_failure(output_prefix) is not None
+
+
+def record_failure(
+    output_prefix: Path,
+    error_type: str,
+    error_message: str,
+) -> Path:
+    """Write a failure marker so a later run skips this job without resolving."""
+
+    path = failure_marker_path(output_prefix)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = f"{error_type}\n{error_message}\n"
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(temporary, path)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+    return path
+
+
+def clear_failure(output_prefix: Path) -> None:
+    failure_marker_path(output_prefix).unlink(missing_ok=True)
+
+
+def adopt_failure_table(
+    output_dir: Path,
+    table_name: str,
+    *,
+    default_mode: str = "ctx",
+) -> None:
+    """Turn an existing failure CSV into per-job markers.
+
+    Medium and tradeoff rewrite the failure CSV at the end of each run, so a
+    marker next to the missing flux is the record that survives the next start.
+    Rows that already have a flux file are left alone.
+    """
+
+    path = output_dir / table_name
+    if not path.is_file() or path.stat().st_size <= 1:
+        return
+    try:
+        table = pd.read_csv(path)
+    except Exception:
+        return
+    if "sample" not in table.columns or "scenario" not in table.columns:
+        return
+    has_mode = "mode" in table.columns
+    for row in table.itertuples(index=False):
+        sample = str(getattr(row, "sample"))
+        scenario = str(getattr(row, "scenario"))
+        if not sample or not scenario or sample == "nan" or scenario == "nan":
+            continue
+        mode = default_mode
+        if has_mode:
+            value = getattr(row, "mode")
+            if pd.notna(value) and str(value).strip():
+                mode = str(value).strip()
+        prefix = output_dir / scenario / f"{sample}-{scenario}-{mode}"
+        if solution_complete(prefix) or failure_recorded(prefix):
+            continue
+        error_type = getattr(row, "error_type", "failed")
+        error_message = getattr(row, "error_message", "")
+        if pd.isna(error_type):
+            error_type = "failed"
+        if pd.isna(error_message):
+            error_message = ""
+        record_failure(prefix, str(error_type), str(error_message))
 
 
 def read_one_column_list(path: str | Path) -> list[str]:

@@ -26,6 +26,7 @@ from _analysis_utils import (
     format_dataset_label,
     load_taxon_ge,
     remove_non_pdf_figures,
+    repo_relative,
     save_figure,
     set_taxon_input_files,
     write_csv_atomic,
@@ -163,7 +164,7 @@ def calculate_job(
         "metric": "ARB",
         "value": float(row["ARB"]),
         **{arb_type: float(row[arb_type]) for arb_type in ARB_TYPES},
-        "ctx_flux": str(job.ctx_flux),
+        "ctx_flux": repo_relative(job.ctx_flux),
     }
 
 
@@ -280,11 +281,7 @@ def plot_datasets(
                 patch.set_alpha(0.28)
             ax.plot([], [], color=color, linewidth=7, alpha=0.28, label=format_dataset_label(dataset))
 
-        point_offsets = (
-            np.arange(len(single_datasets))
-            - (len(single_datasets) - 1) / 2
-        ) * 0.045
-        for offset, dataset in zip(point_offsets, single_datasets):
+        for dataset in single_datasets:
             values = []
             positions = []
             for center, sample in zip(sample_centers, samples):
@@ -298,7 +295,7 @@ def plot_datasets(
                 ).dropna()
                 if len(one):
                     values.append(float(one.iloc[0]))
-                    positions.append(center + offset)
+                    positions.append(center)
             ax.scatter(
                 positions,
                 values,

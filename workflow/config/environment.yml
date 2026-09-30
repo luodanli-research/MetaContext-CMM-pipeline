@@ -1,4 +1,4 @@
-name: cmm-simulation
+name: metacontext
 
 channels:
   - conda-forge
