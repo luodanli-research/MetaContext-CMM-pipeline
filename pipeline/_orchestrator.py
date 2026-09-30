@@ -451,9 +451,8 @@ def warn_if_legacy_output_root(output_root: Path) -> None:
     if text.rstrip("/").endswith("case_study/outputs") or "/case_study/outputs/" in text + "/":
         print(
             "[WARN] --output-root points at case_study/outputs (or under it). "
-            "Pre-solve validation/regeneration should use an isolated run root "
-            "such as case_study/runs/presolve_unified_YYYYMMDD/ so old evidence "
-            "is not overwritten. See pipeline/bootstrap_presolve_run_root.py."
+            "Regeneration should use an isolated run root so published outputs "
+            "are not overwritten."
         )
 
 
