@@ -4,9 +4,11 @@
 Aligned with the parent ANA3-1 / ANA3-2 workflow:
 
 * generate: sample intervals from ``context_bounds.csv`` (RIPTiDe FVA role);
-  use ``<sample>-ctx.pickle`` only for community reaction membership.
+  use pre-solve ``<sample>-ctx.pickle`` only for community reaction membership.
 * simulate: each realization ``load_pickle(ctx)`` → apply LHS bounds →
   cooperative tradeoff (no per-realization bsl/medium/context rebuild).
+
+The ctx pickle must be the formal pre-solve starting model.
 
 Each sample/realization solve runs in an isolated child process so a native
 solver crash (for example SIGSEGV / exit -11) fails only that job and the
@@ -37,6 +39,8 @@ from _sensitivity_simulation import (
     load_sample_context_data,
     make_sensitivity_progress,
     read_one_column_list,
+    record_failure,
+    recorded_failure,
     require_file,
     require_directory,
     resolve_samples,
@@ -47,7 +51,73 @@ from _sensitivity_simulation import (
 )
 
 
-SIGN_EPS = 1e-12
+def _remember_reaction_failure(
+    prefix: Path,
+    error_rows: list[dict[str, object]],
+) -> None:
+    if error_rows:
+        last = error_rows[-1]
+        error_type = str(last.get("error_type", "failed"))
+        error_message = str(last.get("error_message", ""))
+    else:
+        error_type = "failed"
+        error_message = ""
+    record_failure(prefix, error_type, error_message)
+
+
+def _skipped_failure(
+    sample: str,
+    realization_id: int,
+    scenario: str,
+) -> dict[str, object]:
+    return {
+        "sample": sample,
+        "realization_id": realization_id,
+        "scenario": scenario,
+        "status": "skipped_failed",
+    }
+
+
+def adopt_reaction_failures(simulation_dir: Path) -> None:
+    """Promote previous per-sample error summaries into failure markers.
+
+    The summary CSV is rewritten on each resume, so only the marker next to
+    the missing flux is reused on the next run. Jobs that already have a flux
+    file are left alone.
+    """
+
+    for path in sorted(simulation_dir.glob("00_reaction_error_summary_*.csv")):
+        if not path.is_file() or path.stat().st_size <= 1:
+            continue
+        try:
+            table = pd.read_csv(path)
+        except Exception:
+            continue
+        if "sample" not in table.columns or "realization_id" not in table.columns:
+            continue
+        for row in table.itertuples(index=False):
+            sample = str(getattr(row, "sample"))
+            realization = getattr(row, "realization_id")
+            if not sample or sample == "nan" or pd.isna(realization):
+                continue
+            try:
+                scenario = f"S{int(realization):03d}"
+            except (TypeError, ValueError):
+                continue
+            prefix = (
+                simulation_dir
+                / scenario
+                / f"{sample}-reaction-{scenario}-ctx"
+            )
+            if solution_complete(prefix) or recorded_failure(prefix) is not None:
+                continue
+            error_type = getattr(row, "error_type", "failed")
+            error_message = getattr(row, "error_message", "")
+            if pd.isna(error_type):
+                error_type = "failed"
+            if pd.isna(error_message):
+                error_message = ""
+            record_failure(prefix, str(error_type), str(error_message))
 FILE_PREFIX = "LHS_sample"
 SCRIPT_PATH = Path(__file__).resolve()
 
@@ -72,7 +142,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         required=True,
         help=(
-            "Directory with <sample>-ctx.pickle (starting model) and "
+            "Directory with pre-solve <sample>-ctx.pickle (formal starting "
+            "model written before the first ctx solve) and "
             "context_bounds.csv (RIPTiDe intervals for LHS generation)."
         ),
     )
@@ -122,6 +193,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--tradeoff",
+        type=float,
+        default=1.0,
+        help=(
+            "Cooperative-tradeoff fraction for each realization solve "
+            "(default: 1). This is not the LHS perturbation percentage."
+        ),
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=42,
@@ -140,6 +220,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Seconds to wait between solver retries (default: 1.0).",
     )
     parser.add_argument(
+        "--solve-timeout",
+        type=float,
+        default=1800.0,
+        help=(
+            "Wall-clock seconds allowed for one sample/realization worker "
+            "(default: 1800). On timeout the worker is killed, the job is "
+            "recorded as failed, and the schedule continues without retrying "
+            "that timeout."
+        ),
+    )
+    parser.add_argument(
         "--jobs",
         type=int,
         default=1,
@@ -151,7 +242,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Regenerate LHS tables and rerun simulations even if outputs exist.",
+        help=(
+            "Regenerate LHS tables and rerun simulations even if a flux file "
+            "or a recorded failure already exists."
+        ),
     )
     # Internal worker entry used by simulate_one_isolated (not a public CLI).
     parser.add_argument(
@@ -366,6 +460,10 @@ def generate_for_sample(
 
     for realization_id in range(1, n_realizations + 1):
         output = sample_dir / f"{FILE_PREFIX}_S{realization_id:03d}.csv"
+        bak_output = sample_dir / "bak" / output.name
+        # Deferred failures live in bak/; do not regenerate over them.
+        if bak_output.is_file() and bak_output.stat().st_size > 0 and not force:
+            continue
         if output.is_file() and output.stat().st_size > 0 and not force:
             continue
         bounds, detail = generate_realization(
@@ -472,6 +570,7 @@ def simulate_one_attempt(
     context_dir: Path,
     lhs_root: Path,
     simulation_dir: Path,
+    tradeoff: float = 1.0,
 ) -> dict[str, object]:
     """Run one sample/realization solve. Raise on validation or solver errors."""
 
@@ -490,7 +589,7 @@ def simulate_one_attempt(
             + ", ".join(sorted(required - set(bounds.columns)))
         )
     stats = apply_bounds(community, bounds)
-    solution = run_tradeoff(community, fraction=1.0)
+    solution = run_tradeoff(community, fraction=float(tradeoff))
     outputs = save_solution(solution, prefix)
     return {
         "sample": sample,
@@ -514,6 +613,7 @@ def simulate_one(
     max_retries: int,
     retry_wait: float,
     force: bool,
+    tradeoff: float = 1.0,
 ) -> tuple[dict[str, object], list[dict[str, object]]]:
     """Simulate one sample/realization in-process. Prefer simulate_one_isolated."""
 
@@ -531,6 +631,11 @@ def simulate_one(
             },
             [],
         )
+    if not force and recorded_failure(prefix) is not None:
+        return (
+            _skipped_failure(sample, realization_id, scenario),
+            [],
+        )
 
     error_rows: list[dict[str, object]] = []
     for attempt in range(max_retries + 1):
@@ -542,6 +647,7 @@ def simulate_one(
                     context_dir,
                     lhs_root,
                     simulation_dir,
+                    tradeoff=tradeoff,
                 ),
                 error_rows,
             )
@@ -557,6 +663,7 @@ def simulate_one(
             )
             if attempt < max_retries:
                 time.sleep(retry_wait)
+    _remember_reaction_failure(prefix, error_rows)
     return (
         {
             "sample": sample,
@@ -590,6 +697,7 @@ def _run_simulate_worker(args: argparse.Namespace) -> int:
             context_dir,
             lhs_root,
             output_dir,
+            tradeoff=float(args.tradeoff),
         )
         payload = {"ok": True, "summary": summary}
     except Exception as error:
@@ -605,6 +713,30 @@ def _run_simulate_worker(args: argparse.Namespace) -> int:
     return 0
 
 
+def _terminate_worker_process(proc: subprocess.Popen[str]) -> None:
+    """Kill an isolated worker and its process group (CPLEX children included)."""
+
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        proc.wait(timeout=15)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+
+
 def simulate_one_isolated(
     sample: str,
     realization_id: int,
@@ -614,10 +746,17 @@ def simulate_one_isolated(
     max_retries: int,
     retry_wait: float,
     force: bool,
+    solve_timeout: float | None = 1800.0,
+    tradeoff: float = 1.0,
 ) -> tuple[dict[str, object], list[dict[str, object]]]:
-    """Simulate one job in a child process; survive native solver crashes."""
+    """Simulate one job in a child process; survive native solver crashes.
 
-    scenario, _lhs_file, prefix = _scenario_paths(
+    ``solve_timeout`` is wall-clock seconds for one worker attempt. ``None`` or
+    ``<= 0`` disables the timeout. Timed-out jobs are marked failed and are
+    **not** retried (retries only apply to crash / solver error returns).
+    """
+
+    scenario, lhs_file, prefix = _scenario_paths(
         sample, realization_id, lhs_root, simulation_dir
     )
     if not force and solution_complete(prefix):
@@ -631,6 +770,39 @@ def simulate_one_isolated(
             },
             [],
         )
+    if not force and recorded_failure(prefix) is not None:
+        return (
+            _skipped_failure(sample, realization_id, scenario),
+            [],
+        )
+
+    # LHS parked under 01_lhs/<sample>/bak/ → skip without solving (no retry).
+    # Prefer bak even if generate accidentally recreated the live LHS file.
+    bak_lhs = lhs_root / sample / "bak" / lhs_file.name
+    if bak_lhs.is_file() and bak_lhs.stat().st_size > 0 and not force:
+        if lhs_file.is_file():
+            try:
+                lhs_file.unlink()
+            except OSError:
+                pass
+        print(
+            f"[reaction] skip  {sample}/{scenario} "
+            f"(LHS in bak; deferred failure)",
+            flush=True,
+        )
+        return (
+            {
+                "sample": sample,
+                "realization_id": realization_id,
+                "scenario": scenario,
+                "status": "skipped_bak",
+            },
+            [],
+        )
+
+    timeout_sec: float | None = None
+    if solve_timeout is not None and float(solve_timeout) > 0:
+        timeout_sec = float(solve_timeout)
 
     error_rows: list[dict[str, object]] = []
     for attempt in range(max_retries + 1):
@@ -648,20 +820,48 @@ def simulate_one_isolated(
                 str(context_dir),
                 "--output-dir",
                 str(simulation_dir),
+                "--tradeoff",
+                f"{float(tradeoff):g}",
                 "--_result-file",
                 str(result_file),
             ]
-            completed = subprocess.run(command, check=False)
-            if completed.returncode != 0:
+            proc = subprocess.Popen(
+                command,
+                start_new_session=True,
+            )
+            timed_out = False
+            try:
+                proc.wait(timeout=timeout_sec)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                _terminate_worker_process(proc)
+
+            if timed_out:
                 error_rows.append(
                     {
                         "sample": sample,
                         "realization_id": realization_id,
                         "attempt": attempt,
-                        "error_type": _exit_label(completed.returncode),
+                        "error_type": "timeout",
+                        "error_message": (
+                            f"Isolated worker exceeded solve-timeout="
+                            f"{timeout_sec:g}s; killed and skipped."
+                        ),
+                    }
+                )
+                # Do not burn max_retries on the same hanging LP.
+                break
+
+            if proc.returncode != 0:
+                error_rows.append(
+                    {
+                        "sample": sample,
+                        "realization_id": realization_id,
+                        "attempt": attempt,
+                        "error_type": _exit_label(proc.returncode),
                         "error_message": (
                             f"Isolated worker terminated with return code "
-                            f"{completed.returncode}"
+                            f"{proc.returncode}"
                         ),
                     }
                 )
@@ -691,6 +891,7 @@ def simulate_one_isolated(
         if attempt < max_retries:
             time.sleep(retry_wait)
 
+    _remember_reaction_failure(prefix, error_rows)
     return (
         {
             "sample": sample,
@@ -727,6 +928,8 @@ def simulate_all_samples(
     retry_wait: float,
     force: bool,
     jobs: int = 1,
+    solve_timeout: float | None = 1800.0,
+    tradeoff: float = 1.0,
 ) -> None:
     """Simulate realization-major: finish all samples for Sxxx, then next.
 
@@ -736,6 +939,8 @@ def simulate_all_samples(
 
     if jobs < 1:
         raise ValueError("--jobs must be at least 1.")
+    if not force:
+        adopt_reaction_failures(simulation_dir)
     realization_ids = discover_realization_ids(lhs_root, samples)
     summary_by_sample = {sample: [] for sample in samples}
     error_by_sample = {sample: [] for sample in samples}
@@ -760,6 +965,12 @@ def simulate_all_samples(
                         description=f"[{sample}/{scenario}]",
                         status="running",
                     )
+                    # Plain line so sample/scenario is visible when stdout is
+                    # piped (e.g. `| tee`); Rich live bars need a TTY.
+                    print(
+                        f"[reaction] start {sample}/{scenario}",
+                        flush=True,
+                    )
                     results[sample] = simulate_one_isolated(
                         sample,
                         realization_id,
@@ -769,8 +980,14 @@ def simulate_all_samples(
                         max_retries,
                         retry_wait,
                         force,
+                        solve_timeout=solve_timeout,
+                        tradeoff=tradeoff,
                     )
                     status = str(results[sample][0].get("status", "done"))
+                    print(
+                        f"[reaction] done  {sample}/{scenario} status={status}",
+                        flush=True,
+                    )
                     progress.update(task_id, advance=1, status=status)
             else:
                 progress.update(
@@ -790,13 +1007,24 @@ def simulate_all_samples(
                             max_retries,
                             retry_wait,
                             force,
+                            solve_timeout,
+                            tradeoff,
                         ): sample
                         for sample in samples
                     }
+                    for sample in samples:
+                        print(
+                            f"[reaction] start {sample}/{scenario}",
+                            flush=True,
+                        )
                     for future in as_completed(future_map):
                         sample = future_map[future]
                         results[sample] = future.result()
                         status = str(results[sample][0].get("status", "done"))
+                        print(
+                            f"[reaction] done  {sample}/{scenario} status={status}",
+                            flush=True,
+                        )
                         progress.update(
                             task_id,
                             description=f"[{sample}/{scenario}]",
@@ -825,6 +1053,11 @@ def run(args: argparse.Namespace) -> None:
         raise ValueError("--fraction must be a percentage in (0, 100).")
     if args.jobs < 1:
         raise ValueError("--jobs must be at least 1.")
+    if args.solve_timeout is not None and not np.isfinite(args.solve_timeout):
+        raise ValueError("--solve-timeout must be finite (use <=0 to disable).")
+    tradeoff = float(args.tradeoff)
+    if not np.isfinite(tradeoff) or not 0 < tradeoff <= 1:
+        raise ValueError("--tradeoff must be in (0, 1].")
     if args.stage in {"generate", "all"} and args.reaction_list is None:
         raise ValueError("--reaction-list is required for LHS generation.")
     perturb_fraction = float(args.fraction) / 100.0
@@ -867,6 +1100,8 @@ def run(args: argparse.Namespace) -> None:
             args.retry_wait,
             args.force,
             jobs=args.jobs,
+            solve_timeout=args.solve_timeout,
+            tradeoff=tradeoff,
         )
 
 

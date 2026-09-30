@@ -85,7 +85,7 @@ Output layout (under `{example|case_study}/outputs/`; shared by both launchers):
 | `02_context/` | `context_species.csv` | QC eligibility table |
 | `02_context/` | `context_expression.csv` | QC-filtered expression |
 | `02_context/` | `context_summary.csv` | QC funnel summary |
-| `02_context/` | `<sample>-ctx.pickle` | context community for sensitivity reuse |
+| `02_context/` | `<sample>-ctx.pickle` | **pre-solve** constrained community (saved before first ctx solve; never overwritten after) |
 | `03_simulation/context/` | `<sample>-{bsl,ctx}-flux.csv` | formal (single) flux dataset |
 | `03_simulation/sensitivity_medium/bound<value>/` | `<sample>-bound<value>-{bsl,ctx}-flux.csv` | one folder per medium bound |
 | `03_simulation/sensitivity_tradeoff/tradeoff<value>/` | `<sample>-tradeoff<value>-{bsl,ctx}-flux.csv` | one folder per tradeoff fraction |
@@ -105,6 +105,29 @@ After download, run `python pipeline/run_case_study.py` from the repo root. Outp
 python pipeline/run_case_study.py
 ```
 
+**Isolated pre-solve run root (recommended for regeneration / consistency checks):**
+
+Do not overwrite published `case_study/outputs/`. Bootstrap a dated run tree that
+**copies** bounds/QC into `02_context/` (regular files) and **symlinks**
+`01_baseline` read-only:
+
+```bash
+python pipeline/bootstrap_presolve_run_root.py --case-study-root case_study
+# → case_study/runs/presolve_unified_YYYYMMDD/
+# → case_study/runs/presolve_unified_YYYYMMDD_analysis/
+
+python pipeline/run_case_study.py \
+  --output-root case_study/runs/presolve_unified_YYYYMMDD \
+  --analysis-dir case_study/runs/presolve_unified_YYYYMMDD_analysis \
+  --sample SW46 --sensitivity tradeoff --tradeoffs 1.0
+```
+
+Formal stage writes pre-solve `*-ctx.pickle` beside the copied bounds, then loads
+a fresh instance to solve. Sensitivity starts only when that pickle and formal
+bsl/ctx fluxes exist for the sample (hard gate; no fallback to other trees).
+Acceptance stages and tolerances: `pipeline/ACCEPTANCE_PRESOLVE.md`
+(status until numerical runs finish: **代码修改完成，数值验证待执行**).
+
 **Key options:**
 
 The flags below apply to both `run_example.py` and `run_case_study.py`; only preset defaults differ (samples, sensitivity grids, and AC heatmap guilds). For the full flag set and defaults, run `python pipeline/run_example.py --help` or `python pipeline/run_case_study.py --help`.
@@ -112,6 +135,8 @@ The flags below apply to both `run_example.py` and `run_case_study.py`; only pre
 | Option | Role |
 |---|---|
 | `--sample` | Subset of preset samples to run |
+| `--output-root` | Simulation output tree (default: preset `…/outputs`; use an isolated `runs/presolve_unified_*` root for regeneration) |
+| `--analysis-dir` | Metric output tree |
 | `--sensitivity` | `medium` / `tradeoff` / `reaction` (default: all three) |
 | `--metrics` | `eai` / `arb` / `ac` (default: `eai arb ac`) |
 | `--medium-bounds` | Medium sensitivity uptake bounds (preset differs by launcher) |
@@ -120,9 +145,10 @@ The flags below apply to both `run_example.py` and `run_case_study.py`; only pre
 | `--force` | Rebuild baselines, re-infer bounds, rerun simulations and metrics |
 | `--check-only` | Validate inputs and print the plan without solving |
 
-Completed stages are reused unless `--force` is set. Infeasible formal or
-sensitivity simulations may be skipped after recording a failure; baseline,
-RIPTiDe, and metric stages stop the pipeline on error.
+Completed stages are reused unless `--force` is set. Formal sample readiness
+(pre-solve ctx pickle + formal fluxes) gates sensitivity and analysis for that
+sample; failed formal stages are recorded and return a non-zero exit when any
+stage failed. Baseline builds refuse to write through a symlinked `01_baseline`.
 
 ## Run Individual Modules
 
@@ -158,48 +184,52 @@ Infer sample-specific RIPTiDe reaction bounds from gene expression after discord
 **3. `workflow/simulation/simulate_community_model.py`**
 
 Run baseline (`bsl`) and context (`ctx`) cooperative-tradeoff simulations.
+Ctx flow: apply medium + RIPTiDe bounds → **save pre-solve**
+`<sample>-ctx.pickle` → `load_pickle` a fresh instance → solve → save flux only
+(pickle is not overwritten after solving).
 
 | | Item | Notes |
 |---|---|---|
 | In | `01_baseline/<sample>-bsl.pickle` | baseline community |
-| In | `02_context/context_bounds.csv` | RIPTiDe bounds |
+| In | `02_context/context_bounds.csv` | RIPTiDe bounds (prefer a real file in the run root, not a symlink into another tree) |
 | In | `03_medium.csv` | exchange constraints |
 | In | `--sample` | sample ID |
 | Out | `03_simulation/context/<sample>-{bsl,ctx}-flux.csv` | formal flux tables |
-| Out | `02_context/<sample>-ctx.pickle` | ctx community for sensitivity reuse |
+| Out | `02_context/<sample>-ctx.pickle` | pre-solve starting model for all ctx sensitivity loads |
 
 **4. `workflow/simulation/sensitivity_medium.py`**
 
-Medium-bound exchange sensitivity: compress listed uptakes on the ctx community per scenario bound.
+Medium-bound exchange sensitivity: load pre-solve ctx pickle per scenario, then compress listed uptakes.
 
 | | Item | Notes |
 |---|---|---|
-| In | `02_context/<sample>-ctx.pickle` | context community |
+| In | `02_context/<sample>-ctx.pickle` | pre-solve context community |
 | In | `03_medium.csv` | exchange constraints |
 | In | `04_medium_sensitivity_list.csv` | exchanges to perturb |
-| In | `<sample>-ctx-flux.csv` | formal flux; reused for `bound1000` |
+| In | `<sample>-ctx-flux.csv` | same-batch formal flux; copied for `bound1000` |
 | In | `--medium-bounds`, `--sample` | scenario bounds and sample ID |
 | Out | `03_simulation/sensitivity_medium/bound<value>/<sample>-bound<value>-{bsl,ctx}-flux.csv` | one folder per bound |
 
 **5. `workflow/simulation/sensitivity_tradeoff.py`**
 
-Cooperative-tradeoff fraction sensitivity (solver parameter sweep per sample).
+Cooperative-tradeoff fraction sensitivity. Each `(sample, mode, fraction)` job
+loads an independent community (`bsl` pickle or pre-solve `ctx` pickle) and
+solves once. `--medium-file` is optional CLI compatibility only and is unused.
 
 | | Item | Notes |
 |---|---|---|
-| In | `01_baseline/<sample>-bsl.pickle` | baseline community |
-| In | `02_context/context_bounds.csv` | RIPTiDe bounds |
-| In | `03_medium.csv` | exchange constraints |
+| In | `01_baseline/<sample>-bsl.pickle` | baseline community (`bsl` mode) |
+| In | `02_context/<sample>-ctx.pickle` | pre-solve context community (`ctx` mode; required) |
 | In | `--tradeoffs`, `--sample` | fraction grid and sample ID |
 | Out | `03_simulation/sensitivity_tradeoff/tradeoff<value>/<sample>-tradeoff<value>-{bsl,ctx}-flux.csv` | one folder per fraction |
 
 **6. `workflow/simulation/sensitivity_reaction.py`**
 
-RIPTiDe-bound Latin Hypercube Sampling (LHS) reaction-constraint sensitivity (one solve per realization).
+RIPTiDe-bound Latin Hypercube Sampling (LHS) reaction-constraint sensitivity (one solve per realization from a fresh pre-solve ctx load).
 
 | | Item | Notes |
 |---|---|---|
-| In | `02_context/<sample>-ctx.pickle` | context community |
+| In | `02_context/<sample>-ctx.pickle` | pre-solve context community |
 | In | `02_context/context_bounds.csv` | interval source |
 | In | `04_reaction_sensitivity_list.csv` | reaction families to perturb |
 | In | `--reaction-realizations`, `--sample` | LHS realization count and sample ID |

@@ -49,6 +49,7 @@ from _analysis_utils import (
     load_taxon_ge,
     load_taxon_guild,
     remove_non_pdf_figures,
+    repo_relative,
     save_figure,
     set_taxon_input_files,
     write_csv_atomic,
@@ -909,7 +910,7 @@ def calculate_job(
     metrics.insert(0, "dataset", job.dataset)
     metrics["metric"] = metrics["guild_pair"].map(lambda value: f"AC_{value}")
     metrics["value"] = metrics["AC_mass"]
-    metrics["ctx_flux"] = str(job.ctx_flux)
+    metrics["ctx_flux"] = repo_relative(job.ctx_flux)
     metrics["interaction_method"] = method
     print(f"[AC] complete ({method}) {job_tag}", flush=True)
     return metrics, interactions_table

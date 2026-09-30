@@ -25,6 +25,7 @@ from _analysis_utils import (
     configure_publication_style,
     format_dataset_label,
     remove_non_pdf_figures,
+    repo_relative,
     save_figure,
     write_csv_atomic,
 )
@@ -373,11 +374,22 @@ def calculate_job(
             "metric": f"EAIshape_{element}",
             "element": element,
             "value": float(ctx[f"EAIshape_{element}"]),
-            "bsl_flux": str(job.bsl_flux),
-            "ctx_flux": str(job.ctx_flux),
+            "bsl_flux": repo_relative(job.bsl_flux),
+            "ctx_flux": repo_relative(job.ctx_flux),
         }
         for element in ELEMENTS
     ]
+
+
+def _radar_tradeoff_single_mask(frame: pd.DataFrame) -> pd.Series:
+    """Keep context and tradeoff 0.5; drop other tradeoff-named singles."""
+
+    if frame.empty or "dataset" not in frame.columns:
+        return pd.Series(False, index=frame.index)
+    names = frame["dataset"].astype(str).str.strip().str.lower()
+    tradeoff_named = names.str.startswith("tradeoff")
+    allowed = names.isin({"tradeoff0.5", "tradeoff1"})
+    return ~tradeoff_named | allowed
 
 
 def plot_datasets(
@@ -391,9 +403,17 @@ def plot_datasets(
     configure_publication_style()
     remove_non_pdf_figures(output)
     singles, batches = partition_metric_rows(table)
+    # Tradeoff singles on the radar are context (fraction 1) and tradeoff 0.5.
+    # The tradeoff sensitivity batch stays, as its median and IQR.
+    singles = singles.loc[_radar_tradeoff_single_mask(singles)].copy()
     angles = np.linspace(0, 2 * np.pi, len(ELEMENTS), endpoint=False)
     closed_angles = np.append(angles, angles[0])
-    datasets = list(table["dataset"].drop_duplicates())
+    plotted_names = set(singles["dataset"]).union(batches["dataset"])
+    datasets = [
+        dataset
+        for dataset in table["dataset"].drop_duplicates()
+        if dataset in plotted_names
+    ]
     single_datasets = list(singles["dataset"].drop_duplicates())
     color_map = assign_dataset_colors(
         datasets,
@@ -461,7 +481,7 @@ def plot_datasets(
         singles_values = singles.loc[
             singles["sample"].isin(samples), "value"
         ]
-        # Median plot draws both formal singles and batch medians.
+        # Median plot draws the kept singles and every batch median.
         median_radial_max = radial_limit(
             singles_values,
             batch_statistics.loc[sample_mask, "center"],

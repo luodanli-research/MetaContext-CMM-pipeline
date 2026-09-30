@@ -40,7 +40,7 @@ EXAMPLE = _preset(
     data_root=Path("example"),
     sample=["EX01"],
     medium_bounds=[1000.0, 100.0, 10.0],
-    tradeoffs=[0.1, 0.5, 1.0],
+    tradeoffs=[1.0],
     reaction_realizations=5,
     ac_heatmap_guilds=["GI", "GII"],
 )
